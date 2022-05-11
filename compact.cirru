@@ -1,35 +1,33 @@
 
-{} (:package |lib)
-  :configs $ {} (:init-fn |lib.test/main!) (:reload-fn |lib.test/reload!)
+{} (:package |fswatch)
+  :configs $ {} (:init-fn |fswatch.test/main!) (:reload-fn |fswatch.test/reload!) (:version |0.0.1)
     :modules $ []
-    :version |0.0.1
+  :entries $ {}
   :files $ {}
-    |lib.core $ {}
-      :ns $ quote
-        ns lib.core $ :require
-          lib.$meta :refer $ calcit-dirname
-          lib.util :refer $ get-dylib-path
+    |fswatch.core $ {}
       :defs $ {}
-        |path-exists? $ quote
-          defn path-exists? (name)
-            &call-dylib-edn (get-dylib-path "\"/dylibs/libcalcit_std") "\"path_exists" name
-    |lib.test $ {}
+        |fswatch! $ quote
+          defn fswatch! (options cb)
+            &call-dylib-edn-fn (get-dylib-path "\"/dylibs/libcalcit_std") "\"fswatch" options cb
       :ns $ quote
-        ns lib.test $ :require
-          lib.core :refer $ path-exists?
-          lib.$meta :refer $ calcit-dirname calcit-filename
+        ns fswatch.core $ :require
+          fswatch.$meta :refer $ calcit-dirname
+          fswatch.util :refer $ get-dylib-path
+    |fswatch.test $ {}
       :defs $ {}
-        |run-tests $ quote
-          defn run-tests () (println "\"%%%% test for lib") (println calcit-filename calcit-dirname)
-            println (path-exists? "\"README.md") (path-exists? "\"build.js")
         |main! $ quote
-          defn main! () $ run-tests
+          defn main! () $ fswatch!
+            {} (:path "\"sandbox") (:duration 1000)
+            fn (event) (println event)
         |reload! $ quote
           defn reload! $
-    |lib.util $ {}
+        |run-tests $ quote
+          defn run-tests () (println "\"%%%% test for lib") (println calcit-filename calcit-dirname)
       :ns $ quote
-        ns lib.util $ :require
-          lib.$meta :refer $ calcit-dirname calcit-filename
+        ns fswatch.test $ :require
+          fswatch.core :refer $ fswatch!
+          fswatch.$meta :refer $ calcit-dirname calcit-filename
+    |fswatch.util $ {}
       :defs $ {}
         |get-dylib-ext $ quote
           defmacro get-dylib-ext () $ case-default (&get-os) "\".so" (:macos "\".dylib") (:windows "\".dll")
@@ -39,3 +37,6 @@
         |or-current-path $ quote
           defn or-current-path (p)
             if (blank? p) "\"." p
+      :ns $ quote
+        ns fswatch.util $ :require
+          fswatch.$meta :refer $ calcit-dirname calcit-filename
