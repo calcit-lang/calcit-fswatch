@@ -20,8 +20,8 @@ pub fn fswatch(
   if let Some(options) = args.get(0) {
     match options {
       Edn::Map(o) => {
-        let path = &*o.get(&Edn::kwd("path")).ok_or("path is required")?.read_str()?;
-        let duration = o.get(&Edn::kwd("duration")).ok_or("duration is required")?.read_number()? as u64;
+        let path = &*o.get(&Edn::tag("path")).ok_or("path is required")?.read_str()?;
+        let duration = o.get(&Edn::tag("duration")).ok_or("duration is required")?.read_number()? as u64;
 
         // Create a channel to receive the events.
         let (tx, rx) = channel();
@@ -41,27 +41,27 @@ pub fn fswatch(
             Ok(event) => match event {
               DebouncedEvent::Write(path) => {
                 handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("wrote")),
-                  (Edn::kwd("path"), Edn::str(&path.display().to_string())),
+                  (Edn::tag("type"), Edn::tag("wrote")),
+                  (Edn::tag("path"), Edn::str(&path.display().to_string())),
                 ]))])?;
               }
               DebouncedEvent::Create(path) => {
                 handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("created")),
-                  (Edn::kwd("path"), Edn::str(&path.display().to_string())),
+                  (Edn::tag("type"), Edn::tag("created")),
+                  (Edn::tag("path"), Edn::str(&path.display().to_string())),
                 ]))])?;
               }
               DebouncedEvent::Remove(path) => {
                 handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("removed")),
-                  (Edn::kwd("path"), Edn::str(&path.display().to_string())),
+                  (Edn::tag("type"), Edn::tag("removed")),
+                  (Edn::tag("path"), Edn::str(&path.display().to_string())),
                 ]))])?;
               }
               DebouncedEvent::Rename(from, to) => {
                 handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("renamed")),
-                  (Edn::kwd("path"), Edn::str(&to.display().to_string())),
-                  (Edn::kwd("from"), Edn::str(&from.display().to_string())),
+                  (Edn::tag("type"), Edn::tag("renamed")),
+                  (Edn::tag("path"), Edn::str(&to.display().to_string())),
+                  (Edn::tag("from"), Edn::str(&from.display().to_string())),
                 ]))])?;
               }
               DebouncedEvent::NoticeWrite(_) | DebouncedEvent::NoticeRemove(_) => {}
