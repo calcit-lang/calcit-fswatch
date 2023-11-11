@@ -1,6 +1,6 @@
 
 {} (:package |fswatch)
-  :configs $ {} (:init-fn |fswatch.test/main!) (:reload-fn |fswatch.test/reload!) (:version |0.0.2)
+  :configs $ {} (:init-fn |fswatch.test/main!) (:reload-fn |fswatch.test/reload!) (:version |0.0.3)
     :modules $ []
   :entries $ {}
   :files $ {}
