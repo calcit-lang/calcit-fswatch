@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::{collections::HashMap, path::Path};
 
 use cirru_edn::Edn;
-use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
+use notify::event::{DataChange, ModifyKind};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc::channel;
-use std::time::Duration;
 
 #[no_mangle]
 pub fn abi_version() -> String {
@@ -20,8 +20,8 @@ pub fn fswatch(
   if let Some(options) = args.get(0) {
     match options {
       Edn::Map(o) => {
-        let path = &*o.get(&Edn::kwd("path")).ok_or("path is required")?.read_str()?;
-        let duration = o.get(&Edn::kwd("duration")).ok_or("duration is required")?.read_number()? as u64;
+        let path = &*o.get(&Edn::tag("path")).ok_or("path is required")?.read_str()?;
+        let duration = o.get(&Edn::tag("duration")).ok_or("duration is required")?.read_number()? as u64;
 
         // Create a channel to receive the events.
         let (tx, rx) = channel();
@@ -30,50 +30,63 @@ pub fn fswatch(
 
         // Create a watcher object, delivering debounced events.
         // The notification back-end is selected based on the platform.
-        let mut watcher = watcher(tx, Duration::from_millis(duration)).unwrap();
+        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
 
         // Add a path to be watched. All files and directories at that path and
         // below will be monitored for changes.
-        watcher.watch(path, RecursiveMode::Recursive).unwrap();
+        watcher.watch(Path::new(path), RecursiveMode::Recursive).unwrap();
 
-        loop {
-          match rx.recv() {
-            Ok(event) => match event {
-              DebouncedEvent::Write(path) => {
-                handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("wrote")),
-                  (Edn::kwd("path"), Edn::str(&path.display().to_string())),
-                ]))])?;
+        for res in rx {
+          match res {
+            Ok(event) => match event.kind {
+              EventKind::Modify(m) => match m {
+                ModifyKind::Data(change) => match change {
+                  DataChange::Content => {
+                    for path in event.paths {
+                      handler(vec![new_event("modify", &path.display().to_string(), &format!("{:?}", m))])?;
+                    }
+                  }
+                  DataChange::Size => {}
+                  DataChange::Any => {}
+                  DataChange::Other => {}
+                },
+                ModifyKind::Name(_) => {
+                  for path in event.paths {
+                    handler(vec![new_event("rename", &path.display().to_string(), &format!("{:?}", m))])?;
+                  }
+                }
+                ModifyKind::Any => {}
+                ModifyKind::Metadata(_m) => {}
+                ModifyKind::Other => {}
+              },
+              EventKind::Create(m) => {
+                for path in event.paths {
+                  handler(vec![new_event("create", &path.display().to_string(), &format!("{:?}", m))])?;
+                }
               }
-              DebouncedEvent::Create(path) => {
-                handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("created")),
-                  (Edn::kwd("path"), Edn::str(&path.display().to_string())),
-                ]))])?;
+              EventKind::Remove(m) => {
+                for path in event.paths {
+                  handler(vec![new_event("remove", &path.display().to_string(), &format!("{:?}", m))])?;
+                }
               }
-              DebouncedEvent::Remove(path) => {
-                handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("removed")),
-                  (Edn::kwd("path"), Edn::str(&path.display().to_string())),
-                ]))])?;
-              }
-              DebouncedEvent::Rename(from, to) => {
-                handler(vec![Edn::Map(HashMap::from([
-                  (Edn::kwd("type"), Edn::kwd("renamed")),
-                  (Edn::kwd("path"), Edn::str(&to.display().to_string())),
-                  (Edn::kwd("from"), Edn::str(&from.display().to_string())),
-                ]))])?;
-              }
-              DebouncedEvent::NoticeWrite(_) | DebouncedEvent::NoticeRemove(_) => {}
-              _ => println!("skipped event: {:?}", event),
+              _ => {}
             },
-            Err(e) => println!("watch error: {:?}", e),
+            Err(error) => println!("error: {error}"),
           }
         }
+        Ok(Edn::Nil)
       }
       _ => Err(format!("invalid options: {:?}", options)),
     }
   } else {
     Err(String::from("missing options"))
   }
+}
+
+fn new_event(t: &str, p: &str, extra: &str) -> Edn {
+  Edn::Map(HashMap::from([
+    (Edn::tag("type"), Edn::tag(t)),
+    (Edn::tag("path"), Edn::str(p)),
+    (Edn::tag("extra"), Edn::str(extra)),
+  ]))
 }
