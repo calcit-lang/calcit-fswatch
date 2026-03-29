@@ -35,11 +35,11 @@ pub fn fswatch(
 
         // Create a watcher object, delivering debounced events.
         // The notification back-end is selected based on the platform.
-        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
+        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).map_err(|e| format!("failed to create watcher: {}", e))?;
 
         // Add a path to be watched. All files and directories at that path and
         // below will be monitored for changes.
-        watcher.watch(Path::new(path), RecursiveMode::Recursive).unwrap();
+        watcher.watch(Path::new(path), RecursiveMode::Recursive).map_err(|e| format!("failed to watch path {}: {}", path, e))?;
 
         for res in rx {
           match res {
