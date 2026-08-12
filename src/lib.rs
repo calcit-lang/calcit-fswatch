@@ -1,21 +1,26 @@
 use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 
-use cirru_edn::Edn;
+use cirru_edn::{Edn, EdnMapView};
 use notify::event::{DataChange, ModifyKind};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc::channel;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn abi_version() -> String {
-  String::from("0.0.6")
+  String::from("0.0.9")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
+pub fn edn_version() -> String {
+  cirru_edn::version().to_owned()
+}
+
+#[unsafe(no_mangle)]
 pub fn fswatch(
   args: Vec<Edn>,
   handler: Arc<dyn Fn(Vec<Edn>) -> Result<Edn, String> + Send + Sync + 'static>,
-  _finish: Box<dyn FnOnce()>,
+  _finish: Box<dyn FnOnce() + Send + Sync + 'static>,
 ) -> Result<Edn, String> {
   if let Some(options) = args.get(0) {
     match options {
@@ -30,11 +35,11 @@ pub fn fswatch(
 
         // Create a watcher object, delivering debounced events.
         // The notification back-end is selected based on the platform.
-        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).unwrap();
+        let mut watcher = RecommendedWatcher::new(tx, notify::Config::default()).map_err(|e| format!("failed to create watcher: {}", e))?;
 
         // Add a path to be watched. All files and directories at that path and
         // below will be monitored for changes.
-        watcher.watch(Path::new(path), RecursiveMode::Recursive).unwrap();
+        watcher.watch(Path::new(path), RecursiveMode::Recursive).map_err(|e| format!("failed to watch path {}: {}", path, e))?;
 
         for res in rx {
           match res {
@@ -84,9 +89,9 @@ pub fn fswatch(
 }
 
 fn new_event(t: &str, p: &str, extra: &str) -> Edn {
-  Edn::Map(HashMap::from([
+  Edn::Map(EdnMapView(HashMap::from([
     (Edn::tag("type"), Edn::tag(t)),
     (Edn::tag("path"), Edn::str(p)),
     (Edn::tag("extra"), Edn::str(extra)),
-  ]))
+  ])))
 }
