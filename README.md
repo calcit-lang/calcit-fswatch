@@ -33,16 +33,16 @@ cr calcit.cirru --check-only
 
 Not all events from fswatch are exposed, currently only:
 
-- `:wrote`
-- `:created`
-- `:removed`
-- `:renamed`
+- `:modify`
+- `:create`
+- `:remove`
+- `:rename`
 
 a demo of event data:
 
 ```cirru
 {}
-  :type :wrote
+  :type :modify
   :path |folder/demo.cirru
 ```
 
