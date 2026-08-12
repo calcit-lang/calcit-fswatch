@@ -17,7 +17,19 @@ fswatch.core/fswatch!
     println event
 ```
 
-Install to `~/.config/calcit/modules/`, compile and provide `*.{dylib,so}` file with `./build.sh`.
+Install through `caps`, then compile and provide the platform dynamic library with `./build.sh`.
+The Rust dependency on `cirru_edn` must stay compatible with the Calcit runtime
+used by the consumer; CI builds and smoke-tests this boundary with the version
+declared in `deps.cirru`.
+
+The project keeps one canonical `calcit.cirru` snapshot. Validate it and build
+the native library with:
+
+```sh
+caps --ci
+cr calcit.cirru --check-only
+./build.sh
+```
 
 Not all events from fswatch are exposed, currently only:
 

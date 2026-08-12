@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: calcit-lang/setup-cr@0.0.8
+      - uses: calcit-lang/setup-cr@0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -22,8 +22,19 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - run: caps --ci
+
       - run: cargo build --release
 
       - run: mkdir -p dylibs/ && ls target/release/ && cp -v target/release/*.* dylibs/
 
-      - run: cr
+      - name: Validate Calcit snapshot
+        run: |
+          cr calcit.cirru edit format
+          git diff --exit-code -- calcit.cirru
+          cr calcit.cirru --check-only
+          cr calcit.cirru analyze check-types --summary-only --format json
+          cr calcit.cirru analyze weak-types --only schema-dynamic,code-dynamic --intent unresolved --summary-only --format json
+
+      - name: Run watcher smoke test
+        run: timeout 5s cr calcit.cirru || test $? -eq 124
