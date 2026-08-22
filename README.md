@@ -27,7 +27,7 @@ the native library with:
 
 ```sh
 caps --ci
-cr calcit.cirru --check-only
+calcit calcit.cirru --check-only
 ./build.sh
 ```
 

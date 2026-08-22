@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: calcit-lang/setup-cr@0.0.9
+      - uses: calcit-lang/setup-calcit@v1.3.0
+        with:
+          tools: calcit,caps
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -30,11 +32,11 @@ jobs:
 
       - name: Validate Calcit snapshot
         run: |
-          cr calcit.cirru edit format
+          calcit calcit.cirru edit format
           git diff --exit-code -- calcit.cirru
-          cr calcit.cirru --check-only
-          cr calcit.cirru analyze check-types --summary-only --format json
-          cr calcit.cirru analyze weak-types --only schema-dynamic,code-dynamic --intent unresolved --summary-only --format json
+          calcit calcit.cirru --check-only
+          calcit calcit.cirru analyze check-types --summary-only --format json
+          calcit calcit.cirru analyze weak-types --only schema-dynamic,code-dynamic --intent unresolved --summary-only --format json
 
       - name: Run watcher smoke test
-        run: timeout 5s cr calcit.cirru || test $? -eq 124
+        run: timeout 5s calcit calcit.cirru || test $? -eq 124
