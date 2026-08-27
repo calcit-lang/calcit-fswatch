@@ -10,17 +10,15 @@ APIs:
 
 ```cirru
 fswatch.core/fswatch!
-  {}
-    :path |folder/
-    :duration 200
+  fswatch.core/FswatchOptions :path |folder/ :duration 200
   fn (event)
-    println event
+    println event.:type event.:path
 ```
 
 Install through `caps`, then compile and provide the platform dynamic library with `./build.sh`.
-The Rust dependency on `cirru_edn` must stay compatible with the Calcit runtime
-used by the consumer; CI builds and smoke-tests this boundary with the version
-declared in `deps.cirru`.
+The native library uses Calcit's C-safe cancellable async Stream protocol v1 and
+requires Calcit 0.13.52 or newer. Legacy Rust callback ABI symbols are no longer
+exported.
 
 The project keeps one canonical `calcit.cirru` snapshot. Validate it and build
 the native library with:
@@ -38,12 +36,14 @@ Not all events from fswatch are exposed, currently only:
 - `:remove`
 - `:rename`
 
+The watcher declares serialized callback delivery with coalescing allowed. The
+runtime can cancel it during shutdown; cancellation drops the native watcher and
+publishes an explicit completion event.
+
 a demo of event data:
 
 ```cirru
-{}
-  :type :modify
-  :path |folder/demo.cirru
+FswatchEvent :type :modify :path |folder/demo.cirru :extra |Data(Content)
 ```
 
 ### Workflow

@@ -12,7 +12,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: calcit-lang/setup-calcit@v1.3.0
         with:
@@ -21,14 +21,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
       - run: caps --ci
 
+      - run: cargo fmt -- --check
+
+      - run: cargo test
+
+      - run: cargo clippy --all-targets -- -D warnings
+
       - run: cargo build --release
 
-      - run: mkdir -p dylibs/ && ls target/release/ && cp -v target/release/*.* dylibs/
+      - run: mkdir -p dylibs/ && cp -v target/release/libcalcit_fswatch.* dylibs/
+
+      - run: bash scripts/check-c-safe-ffi.sh
 
       - name: Validate Calcit snapshot
         run: |
@@ -39,4 +48,12 @@ jobs:
           calcit calcit.cirru analyze weak-types --only schema-dynamic,code-dynamic --intent unresolved --summary-only --format json
 
       - name: Run watcher smoke test
-        run: timeout 5s calcit calcit.cirru || test $? -eq 124
+        shell: bash
+        run: |
+          mkdir -p sandbox
+          set +e
+          timeout 5s calcit --trace-ffi calcit.cirru 2>&1 | tee /tmp/fswatch-smoke.log
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -eq 124
+          grep -F 'fswatch_calcit_ffi_async_v1' /tmp/fswatch-smoke.log
