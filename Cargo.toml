@@ -1,6 +1,6 @@
 [package]
 name = "calcit_fswatch"
-version = "0.0.7"
+version = "0.0.8"
 authors = ["jiyinyiyong <jiyinyiyong@gmail.com>"]
 edition = "2024"
 
