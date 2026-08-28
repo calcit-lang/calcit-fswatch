@@ -1,6 +1,6 @@
 use calcit_native_ffi::{
   BackpressurePolicy, CalcitFfiAsyncHostV1, CalcitFfiAsyncTaskV1, configure_task, copy_async_host, copy_task_descriptor,
-  decode_request, encode_callback_args, enqueue, event_kind, publish_complete as publish_async_complete,
+  decode_request, publish_complete as publish_async_complete, publish_emit_until as publish_async_emit_until,
   publish_failure as publish_async_failure, status, task_flags, task_kind,
 };
 use cirru_edn::{Edn, EdnStructView};
@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::{sleep, spawn};
+use std::thread::spawn;
 use std::time::Duration;
 
 calcit_native_ffi::export_async_abi_v1!();
@@ -60,36 +60,10 @@ fn parse_options(args: &[Edn]) -> Result<(Arc<str>, Duration), String> {
   Ok((path, Duration::from_millis(milliseconds as u64)))
 }
 
-fn enqueue_with_cancellation(
-  control: &WatchControl,
-  kind: u32,
-  payload: &[u8],
-  stop_when_cancelled: bool,
-  policy: BackpressurePolicy,
-) -> i32 {
-  let mut retries = 0;
-  loop {
-    if stop_when_cancelled && control.cancelled.load(Ordering::Acquire) {
-      return status::HANDLE_FINISHED;
-    }
-    let result = enqueue(control.host, control.task, kind, 0, payload);
-    if result != status::QUEUE_FULL {
-      return result;
-    }
-    if policy.max_retries.is_some_and(|limit| retries >= limit) {
-      return result;
-    }
-    retries += 1;
-    sleep(policy.retry_delay);
-  }
-}
-
 fn publish_emit(control: &WatchControl, event: Edn) -> i32 {
-  let payload = match encode_callback_args(vec![event]) {
-    Ok(payload) => payload,
-    Err(_) => return status::INTERNAL_ERROR,
-  };
-  enqueue_with_cancellation(control, event_kind::EMIT, &payload, true, BackpressurePolicy::default())
+  publish_async_emit_until(control.host, control.task, vec![event], BackpressurePolicy::default(), || {
+    !control.cancelled.load(Ordering::Acquire)
+  })
 }
 
 fn publish_failure(control: &WatchControl, message: impl Into<String>) -> i32 {
@@ -254,10 +228,11 @@ pub unsafe extern "C" fn fswatch_calcit_ffi_async_v1(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use calcit_native_ffi::{ASYNC_PROTOCOL_VERSION, AsyncTaskCancel, encode_edn};
+  use calcit_native_ffi::{ASYNC_PROTOCOL_VERSION, AsyncTaskCancel, encode_edn, event_kind};
   use cirru_edn::EdnListView;
   use notify::event::CreateKind;
   use std::fs;
+  use std::thread::sleep;
   use std::time::{Instant, SystemTime, UNIX_EPOCH};
   use std::{ptr, slice};
 
@@ -383,15 +358,14 @@ mod tests {
       task,
     });
     let worker_control = Arc::clone(&control);
-    let worker =
-      spawn(move || enqueue_with_cancellation(&worker_control, event_kind::EMIT, b"[]", true, BackpressurePolicy::default()));
+    let worker = spawn(move || publish_emit(&worker_control, Edn::tag("blocked")));
     let deadline = Instant::now() + Duration::from_secs(1);
     while QUEUE_CALLS.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
       sleep(Duration::from_millis(1));
     }
     assert!(QUEUE_CALLS.load(Ordering::Relaxed) > 0, "enqueue was not attempted");
     control.cancelled.store(true, Ordering::Release);
-    assert_eq!(worker.join().expect("backpressure worker"), status::HANDLE_FINISHED);
+    assert_eq!(worker.join().expect("backpressure worker"), status::HANDLE_CLOSING);
   }
 
   #[test]
