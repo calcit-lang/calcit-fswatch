@@ -308,21 +308,25 @@ mod tests {
     )
   }
 
+  fn event_seen(kind: u32) -> bool {
+    EVENTS
+      .get_or_init(|| Mutex::new(vec![]))
+      .lock()
+      .expect("events")
+      .iter()
+      .any(|event| event.0 == kind)
+  }
+
   fn wait_for(kind: u32) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-      if EVENTS
-        .get_or_init(|| Mutex::new(vec![]))
-        .lock()
-        .expect("events")
-        .iter()
-        .any(|event| event.0 == kind)
-      {
+      if event_seen(kind) {
         return;
       }
       sleep(Duration::from_millis(5));
     }
-    panic!("timed out waiting for event {kind}");
+    let events = EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clone();
+    panic!("timed out waiting for event {kind}; recorded events: {events:?}");
   }
 
   #[test]
@@ -388,8 +392,17 @@ mod tests {
     let (kind, flags, context, cancel) = CONFIG.get().expect("config").lock().expect("config lock").expect("configured");
     assert_eq!(kind, task_kind::STREAM);
     assert_eq!(flags, task_flags::SERIAL_EVENTS | task_flags::COALESCE_ALLOWED);
-    sleep(Duration::from_millis(100));
-    fs::write(path.join("event.cirru"), b"event").expect("write watched file");
+    // The async start contract reports watcher initialization failures through
+    // a terminal event, so configuration may precede OS watcher readiness.
+    // Keep producing distinct create events until the stream proves ready
+    // instead of relying on an arbitrary startup sleep.
+    let ready_deadline = Instant::now() + Duration::from_secs(5);
+    let mut sequence = 0;
+    while !event_seen(event_kind::EMIT) && Instant::now() < ready_deadline {
+      fs::write(path.join(format!("event-{sequence}.cirru")), b"event").expect("write watched file");
+      sequence += 1;
+      sleep(Duration::from_millis(25));
+    }
     wait_for(event_kind::EMIT);
     assert_eq!(unsafe { cancel(context, task.handle, ptr::null(), 0) }, status::OK);
     wait_for(event_kind::COMPLETE);
