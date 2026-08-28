@@ -1,57 +1,21 @@
-use cirru_edn::{Edn, EdnListView, EdnStructView};
+use calcit_native_ffi::{
+  BackpressurePolicy, CalcitFfiAsyncHostV1, CalcitFfiAsyncTaskV1, configure_task, copy_async_host, copy_task_descriptor,
+  decode_request, encode_callback_args, enqueue, event_kind, publish_complete as publish_async_complete,
+  publish_failure as publish_async_failure, status, task_flags, task_kind,
+};
+use cirru_edn::{Edn, EdnStructView};
 use notify::event::{DataChange, ModifyKind};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::ptr;
-use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 
-const PROTOCOL_VERSION: u32 = 1;
-const STATUS_OK: i32 = 0;
-const STATUS_HANDLE_FINISHED: i32 = 4;
-const STATUS_QUEUE_FULL: i32 = 7;
-const STATUS_INVALID_PAYLOAD: i32 = 8;
-const STATUS_INTERNAL_ERROR: i32 = 9;
-const TASK_STREAM: u32 = 2;
-const TASK_SERIAL_EVENTS: u32 = 1;
-const TASK_COALESCE_ALLOWED: u32 = 1 << 1;
-const EVENT_EMIT: u32 = 1;
-const EVENT_COMPLETE: u32 = 2;
-const EVENT_FAIL: u32 = 3;
-const MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
-
-type AsyncHostEnqueue = unsafe extern "C" fn(u64, u64, u32, u64, *const u8, usize) -> i32;
-type AsyncTaskCancel = unsafe extern "C" fn(u64, u64, *const u8, usize) -> i32;
-type AsyncResponseResolve = unsafe extern "C" fn(u64, u64, u32, *const u8, usize) -> i32;
-type AsyncHostConfigure = unsafe extern "C" fn(u64, u64, u32, u32, u64, Option<AsyncTaskCancel>) -> i32;
-type AsyncHostOpenResponse = unsafe extern "C" fn(u64, u64, u64, u64, Option<AsyncResponseResolve>, *mut u64) -> i32;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CalcitFfiAsyncTaskV1 {
-  protocol_version: u32,
-  struct_size: u32,
-  handle: u64,
-  kind: u32,
-  flags: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CalcitFfiAsyncHostV1 {
-  protocol_version: u32,
-  struct_size: u32,
-  context: u64,
-  enqueue: Option<AsyncHostEnqueue>,
-  configure_task: Option<AsyncHostConfigure>,
-  open_response: Option<AsyncHostOpenResponse>,
-}
+calcit_native_ffi::export_async_abi_v1!();
 
 struct WatchControl {
   cancelled: AtomicBool,
@@ -75,59 +39,6 @@ fn next_watch_context() -> u64 {
   }
 }
 
-unsafe fn read_abi_header<T>(value: *const T) -> Result<(u32, u32), i32> {
-  if value.is_null() {
-    return Err(STATUS_INVALID_PAYLOAD);
-  }
-  let bytes = value.cast::<u8>();
-  // SAFETY: every versioned descriptor begins with two readable u32 fields.
-  let protocol_version = unsafe { ptr::read_unaligned(bytes.cast::<u32>()) };
-  // SAFETY: the second header field begins four bytes after the first.
-  let struct_size = unsafe { ptr::read_unaligned(bytes.add(std::mem::size_of::<u32>()).cast::<u32>()) };
-  Ok((protocol_version, struct_size))
-}
-
-unsafe fn copy_task(value: *const CalcitFfiAsyncTaskV1) -> Result<CalcitFfiAsyncTaskV1, i32> {
-  // SAFETY: forwarded from the versioned descriptor contract.
-  let (version, size) = unsafe { read_abi_header(value) }?;
-  if version != PROTOCOL_VERSION || size < std::mem::size_of::<CalcitFfiAsyncTaskV1>() as u32 {
-    return Err(STATUS_INVALID_PAYLOAD);
-  }
-  // SAFETY: the validated size covers every v1 field.
-  Ok(unsafe { ptr::read_unaligned(value) })
-}
-
-unsafe fn copy_host(value: *const CalcitFfiAsyncHostV1) -> Result<CalcitFfiAsyncHostV1, i32> {
-  // SAFETY: forwarded from the versioned descriptor contract.
-  let (version, size) = unsafe { read_abi_header(value) }?;
-  if version != PROTOCOL_VERSION || size < std::mem::size_of::<CalcitFfiAsyncHostV1>() as u32 {
-    return Err(STATUS_INVALID_PAYLOAD);
-  }
-  // SAFETY: the validated size covers every v1 field.
-  Ok(unsafe { ptr::read_unaligned(value) })
-}
-
-unsafe fn decode_request(request_ptr: *const u8, request_len: usize) -> Result<Vec<Edn>, String> {
-  if request_len > MAX_BUFFER_BYTES {
-    return Err(format!("fswatch request exceeds {MAX_BUFFER_BYTES} bytes"));
-  }
-  if request_ptr.is_null() && request_len != 0 {
-    return Err("fswatch request pointer is null".to_owned());
-  }
-  let request = if request_len == 0 {
-    &[]
-  } else {
-    // SAFETY: the host keeps request bytes readable for this start call.
-    unsafe { slice::from_raw_parts(request_ptr, request_len) }
-  };
-  let source = std::str::from_utf8(request).map_err(|error| format!("fswatch request is not UTF-8: {error}"))?;
-  let data = cirru_edn::parse(source).map_err(|error| format!("fswatch request is not valid Cirru EDN: {error}"))?;
-  let Edn::List(EdnListView(args)) = data else {
-    return Err("fswatch request must be a Cirru EDN list".to_owned());
-  };
-  Ok(args)
-}
-
 fn parse_options(args: &[Edn]) -> Result<(Arc<str>, Duration), String> {
   let [options] = args else {
     return Err(format!("fswatch expected one options value, got: {args:?}"));
@@ -149,44 +60,44 @@ fn parse_options(args: &[Edn]) -> Result<(Arc<str>, Duration), String> {
   Ok((path, Duration::from_millis(milliseconds as u64)))
 }
 
-fn encode_edn(value: &Edn) -> Result<Vec<u8>, String> {
-  cirru_edn::format(value, true)
-    .map(String::into_bytes)
-    .map_err(|error| format!("failed to encode fswatch payload: {error}"))
-}
-
-fn enqueue(control: &WatchControl, kind: u32, payload: &[u8], stop_when_cancelled: bool) -> i32 {
-  let Some(enqueue) = control.host.enqueue else {
-    return STATUS_INVALID_PAYLOAD;
-  };
+fn enqueue_with_cancellation(
+  control: &WatchControl,
+  kind: u32,
+  payload: &[u8],
+  stop_when_cancelled: bool,
+  policy: BackpressurePolicy,
+) -> i32 {
+  let mut retries = 0;
   loop {
     if stop_when_cancelled && control.cancelled.load(Ordering::Acquire) {
-      return STATUS_HANDLE_FINISHED;
+      return status::HANDLE_FINISHED;
     }
-    // SAFETY: copied descriptors remain valid while the host is running and payload is readable for this call.
-    let status = unsafe { enqueue(control.host.context, control.task.handle, kind, 0, payload.as_ptr(), payload.len()) };
-    if status != STATUS_QUEUE_FULL {
-      return status;
+    let result = enqueue(control.host, control.task, kind, 0, payload);
+    if result != status::QUEUE_FULL {
+      return result;
     }
-    sleep(Duration::from_millis(1));
+    if policy.max_retries.is_some_and(|limit| retries >= limit) {
+      return result;
+    }
+    retries += 1;
+    sleep(policy.retry_delay);
   }
 }
 
 fn publish_emit(control: &WatchControl, event: Edn) -> i32 {
-  let payload = match encode_edn(&Edn::List(EdnListView(vec![event]))) {
+  let payload = match encode_callback_args(vec![event]) {
     Ok(payload) => payload,
-    Err(_) => return STATUS_INTERNAL_ERROR,
+    Err(_) => return status::INTERNAL_ERROR,
   };
-  enqueue(control, EVENT_EMIT, &payload, true)
+  enqueue_with_cancellation(control, event_kind::EMIT, &payload, true, BackpressurePolicy::default())
 }
 
 fn publish_failure(control: &WatchControl, message: impl Into<String>) -> i32 {
-  let payload = encode_edn(&Edn::str(message.into())).unwrap_or_else(|_| b"|failed-to-encode-fswatch-error".to_vec());
-  enqueue(control, EVENT_FAIL, &payload, false)
+  publish_async_failure(control.host, control.task, message, BackpressurePolicy::default())
 }
 
 fn publish_complete(control: &WatchControl) -> i32 {
-  enqueue(control, EVENT_COMPLETE, b"&unit", false)
+  publish_async_complete(control.host, control.task, BackpressurePolicy::default())
 }
 
 fn new_event(kind: &str, path: &Path, extra: &str) -> Edn {
@@ -222,7 +133,7 @@ fn run_watcher(path: Arc<str>, poll_interval: Duration, control: Arc<WatchContro
     match rx.recv_timeout(cancel_poll) {
       Ok(Ok(event)) => {
         for event in map_event(event) {
-          if publish_emit(&control, event) != STATUS_OK {
+          if publish_emit(&control, event) != status::OK {
             return Ok(());
           }
         }
@@ -237,7 +148,7 @@ fn run_watcher(path: Arc<str>, poll_interval: Duration, control: Arc<WatchContro
 
 unsafe extern "C" fn cancel_watch(task_context: u64, _task_handle: u64, reason_ptr: *const u8, reason_len: usize) -> i32 {
   if reason_ptr.is_null() && reason_len != 0 {
-    return STATUS_INVALID_PAYLOAD;
+    return status::INVALID_PAYLOAD;
   }
   let control = watch_controls()
     .lock()
@@ -245,10 +156,10 @@ unsafe extern "C" fn cancel_watch(task_context: u64, _task_handle: u64, reason_p
     .get(&task_context)
     .cloned();
   let Some(control) = control else {
-    return STATUS_HANDLE_FINISHED;
+    return status::HANDLE_FINISHED;
   };
   control.cancelled.store(true, Ordering::Release);
-  STATUS_OK
+  status::OK
 }
 
 unsafe fn start_fswatch_async_v1(
@@ -257,21 +168,21 @@ unsafe fn start_fswatch_async_v1(
   task: *const CalcitFfiAsyncTaskV1,
   host: *const CalcitFfiAsyncHostV1,
 ) -> i32 {
-  let task = match unsafe { copy_task(task) } {
+  let task = match unsafe { copy_task_descriptor(task) } {
     Ok(task) => task,
-    Err(status) => return status,
+    Err(_) => return status::INVALID_PAYLOAD,
   };
-  let host = match unsafe { copy_host(host) } {
+  let host = match unsafe { copy_async_host(host) } {
     Ok(host) if host.enqueue.is_some() && host.configure_task.is_some() => host,
-    _ => return STATUS_INVALID_PAYLOAD,
+    _ => return status::INVALID_PAYLOAD,
   };
   let args = match unsafe { decode_request(request_ptr, request_len) } {
     Ok(args) => args,
-    Err(_) => return STATUS_INVALID_PAYLOAD,
+    Err(_) => return status::INVALID_PAYLOAD,
   };
   let (path, poll_interval) = match parse_options(&args) {
     Ok(options) => options,
-    Err(_) => return STATUS_INVALID_PAYLOAD,
+    Err(_) => return status::INVALID_PAYLOAD,
   };
 
   let context = next_watch_context();
@@ -284,26 +195,20 @@ unsafe fn start_fswatch_async_v1(
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner())
     .insert(context, Arc::clone(&control));
-  let Some(configure) = host.configure_task else {
-    return STATUS_INVALID_PAYLOAD;
-  };
-  // SAFETY: copied host function pointers remain valid while the host runs.
-  let status = unsafe {
-    configure(
-      host.context,
-      task.handle,
-      TASK_STREAM,
-      TASK_SERIAL_EVENTS | TASK_COALESCE_ALLOWED,
-      context,
-      Some(cancel_watch),
-    )
-  };
-  if status != STATUS_OK {
+  let configure_status = configure_task(
+    host,
+    task,
+    task_kind::STREAM,
+    task_flags::SERIAL_EVENTS | task_flags::COALESCE_ALLOWED,
+    context,
+    cancel_watch,
+  );
+  if configure_status != status::OK {
     watch_controls()
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .remove(&context);
-    return status;
+    return configure_status;
   }
 
   spawn(move || {
@@ -324,12 +229,7 @@ unsafe fn start_fswatch_async_v1(
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .remove(&context);
   });
-  STATUS_OK
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn calcit_ffi_async_version() -> u32 {
-  PROTOCOL_VERSION
+  status::OK
 }
 
 /// Start a cancellable filesystem event stream through async protocol v1.
@@ -348,20 +248,24 @@ pub unsafe extern "C" fn fswatch_calcit_ffi_async_v1(
     // SAFETY: forwarded from the exported C contract above.
     unsafe { start_fswatch_async_v1(request_ptr, request_len, task, host) }
   }))
-  .unwrap_or(STATUS_INTERNAL_ERROR)
+  .unwrap_or(status::INTERNAL_ERROR)
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use calcit_native_ffi::{ASYNC_PROTOCOL_VERSION, AsyncTaskCancel, encode_edn};
+  use cirru_edn::EdnListView;
   use notify::event::CreateKind;
   use std::fs;
   use std::time::{Instant, SystemTime, UNIX_EPOCH};
+  use std::{ptr, slice};
 
   type ConfiguredTask = (u32, u32, u64, AsyncTaskCancel);
   type RecordedEvent = (u32, Vec<u8>);
   static EVENTS: OnceLock<Mutex<Vec<RecordedEvent>>> = OnceLock::new();
   static CONFIG: OnceLock<Mutex<Option<ConfiguredTask>>> = OnceLock::new();
+  static QUEUE_CALLS: AtomicU64 = AtomicU64::new(0);
 
   unsafe extern "C" fn record_enqueue(
     _context: u64,
@@ -382,7 +286,7 @@ mod tests {
       .lock()
       .expect("events")
       .push((kind, payload));
-    STATUS_OK
+    status::OK
   }
 
   unsafe extern "C" fn record_configure(
@@ -394,20 +298,32 @@ mod tests {
     cancel: Option<AsyncTaskCancel>,
   ) -> i32 {
     *CONFIG.get_or_init(|| Mutex::new(None)).lock().expect("config") = cancel.map(|cancel| (kind, flags, task_context, cancel));
-    STATUS_OK
+    status::OK
+  }
+
+  unsafe extern "C" fn always_queue_full(
+    _context: u64,
+    _task_handle: u64,
+    _kind: u32,
+    _response_handle: u64,
+    _payload_ptr: *const u8,
+    _payload_len: usize,
+  ) -> i32 {
+    QUEUE_CALLS.fetch_add(1, Ordering::Relaxed);
+    status::QUEUE_FULL
   }
 
   fn descriptors() -> (CalcitFfiAsyncTaskV1, CalcitFfiAsyncHostV1) {
     (
       CalcitFfiAsyncTaskV1 {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: ASYNC_PROTOCOL_VERSION,
         struct_size: std::mem::size_of::<CalcitFfiAsyncTaskV1>() as u32,
         handle: 41,
-        kind: TASK_STREAM,
-        flags: TASK_SERIAL_EVENTS,
+        kind: task_kind::STREAM,
+        flags: task_flags::SERIAL_EVENTS,
       },
       CalcitFfiAsyncHostV1 {
-        protocol_version: PROTOCOL_VERSION,
+        protocol_version: ASYNC_PROTOCOL_VERSION,
         struct_size: std::mem::size_of::<CalcitFfiAsyncHostV1>() as u32,
         context: 9,
         enqueue: Some(record_enqueue),
@@ -418,7 +334,7 @@ mod tests {
   }
 
   fn wait_for(kind: u32) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
       if EVENTS
         .get_or_init(|| Mutex::new(vec![]))
@@ -436,7 +352,7 @@ mod tests {
 
   #[test]
   fn async_layout_and_event_mapping_are_stable() {
-    assert_eq!(calcit_ffi_async_version(), 1);
+    assert_eq!(calcit_ffi_async_version(), ASYNC_PROTOCOL_VERSION);
     assert_eq!(std::mem::size_of::<CalcitFfiAsyncTaskV1>(), 24);
     assert_eq!(std::mem::size_of::<CalcitFfiAsyncHostV1>(), 40);
 
@@ -457,6 +373,28 @@ mod tests {
   }
 
   #[test]
+  fn emit_backpressure_remains_cancellable() {
+    QUEUE_CALLS.store(0, Ordering::Relaxed);
+    let (task, mut host) = descriptors();
+    host.enqueue = Some(always_queue_full);
+    let control = Arc::new(WatchControl {
+      cancelled: AtomicBool::new(false),
+      host,
+      task,
+    });
+    let worker_control = Arc::clone(&control);
+    let worker =
+      spawn(move || enqueue_with_cancellation(&worker_control, event_kind::EMIT, b"[]", true, BackpressurePolicy::default()));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while QUEUE_CALLS.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+      sleep(Duration::from_millis(1));
+    }
+    assert!(QUEUE_CALLS.load(Ordering::Relaxed) > 0, "enqueue was not attempted");
+    control.cancelled.store(true, Ordering::Release);
+    assert_eq!(worker.join().expect("backpressure worker"), status::HANDLE_FINISHED);
+  }
+
+  #[test]
   fn stream_configures_coalescing_and_completes_after_cancel() {
     EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clear();
     *CONFIG.get_or_init(|| Mutex::new(None)).lock().expect("config") = None;
@@ -471,13 +409,16 @@ mod tests {
     let (task, host) = descriptors();
     assert_eq!(
       unsafe { fswatch_calcit_ffi_async_v1(request.as_ptr(), request.len(), &task, &host) },
-      STATUS_OK
+      status::OK
     );
     let (kind, flags, context, cancel) = CONFIG.get().expect("config").lock().expect("config lock").expect("configured");
-    assert_eq!(kind, TASK_STREAM);
-    assert_eq!(flags, TASK_SERIAL_EVENTS | TASK_COALESCE_ALLOWED);
-    assert_eq!(unsafe { cancel(context, task.handle, ptr::null(), 0) }, STATUS_OK);
-    wait_for(EVENT_COMPLETE);
+    assert_eq!(kind, task_kind::STREAM);
+    assert_eq!(flags, task_flags::SERIAL_EVENTS | task_flags::COALESCE_ALLOWED);
+    sleep(Duration::from_millis(100));
+    fs::write(path.join("event.cirru"), b"event").expect("write watched file");
+    wait_for(event_kind::EMIT);
+    assert_eq!(unsafe { cancel(context, task.handle, ptr::null(), 0) }, status::OK);
+    wait_for(event_kind::COMPLETE);
     fs::remove_dir_all(path).expect("remove test directory");
   }
 
@@ -486,7 +427,7 @@ mod tests {
     let (task, host) = descriptors();
     assert_eq!(
       unsafe { fswatch_calcit_ffi_async_v1(ptr::null(), 1, &task, &host) },
-      STATUS_INVALID_PAYLOAD
+      status::INVALID_PAYLOAD
     );
   }
 }

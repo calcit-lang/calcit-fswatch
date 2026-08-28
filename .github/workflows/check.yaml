@@ -25,7 +25,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: caps --ci
+      - run: caps --strict --ci
 
       - run: cargo fmt -- --check
 
@@ -44,8 +44,8 @@ jobs:
           calcit calcit.cirru edit format
           git diff --exit-code -- calcit.cirru
           calcit calcit.cirru --check-only
-          calcit calcit.cirru analyze check-types --summary-only --format json
-          calcit calcit.cirru analyze weak-types --only schema-dynamic,code-dynamic --intent unresolved --summary-only --format json
+          calcit calcit.cirru analyze quality
+          calcit calcit.cirru analyze dynamic-methods --max 0
 
       - name: Run watcher smoke test
         shell: bash
