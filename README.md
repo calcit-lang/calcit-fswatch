@@ -20,12 +20,16 @@ The native library uses Calcit's C-safe cancellable async Stream protocol v1 and
 requires Calcit 0.13.57 or newer. Shared descriptors, validation, Cirru EDN
 transport, host calls, and backpressure policy come from
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi).
+The module tracks `calcit_native_ffi 0.1.2`; async, resource, and buffer
+protocols remain at v1.
 The watcher registry, thread, cancellation state, and cancellation-aware emit
 retry loop remain module-owned. Legacy Rust callback ABI symbols are no longer exported.
 
 原生库要求 Calcit 0.13.57 或更新版本。Descriptor、validation、Cirru EDN
 transport、host call 与 backpressure policy 由
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi) 维护；
+模块当前使用 `calcit_native_ffi 0.1.2`，async、resource 与 buffer protocol
+均继续保持 v1；
 watcher registry、线程、取消状态，以及 emit 重试期间的取消检查继续由模块维护。
 
 The project keeps one canonical `calcit.cirru` snapshot. Validate it and build
