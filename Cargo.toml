@@ -13,7 +13,7 @@ crate-type = ["cdylib"] # Stable C ABI only; do not expose Rust dependency symbo
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-calcit_native_ffi = "0.1.1"
+calcit_native_ffi = "0.1.2"
 cirru_edn = "0.8.0"
 cirru_parser = "0.2.4"
 notify = "6.x"
