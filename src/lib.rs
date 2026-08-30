@@ -4,7 +4,7 @@ use calcit_native_ffi::{
   publish_failure as publish_async_failure, status, task_flags, task_kind,
 };
 use cirru_edn::{Edn, EdnStructView};
-use notify::event::{DataChange, ModifyKind};
+use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -237,7 +237,7 @@ fn new_event(kind: &str, path: &Path, extra: &str) -> Edn {
 
 fn map_event(event: Event) -> Vec<Edn> {
   let kind = match &event.kind {
-    EventKind::Modify(ModifyKind::Data(DataChange::Content)) => "modify",
+    EventKind::Modify(ModifyKind::Data(_)) => "modify",
     EventKind::Modify(ModifyKind::Name(_)) => "rename",
     EventKind::Create(_) => "create",
     EventKind::Remove(_) => "remove",
@@ -412,7 +412,7 @@ mod tests {
   use super::*;
   use calcit_native_ffi::{ASYNC_PROTOCOL_VERSION, AsyncTaskCancel, encode_edn, event_kind};
   use cirru_edn::EdnListView;
-  use notify::event::{CreateKind, RemoveKind, RenameMode};
+  use notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
   use std::fs;
   use std::thread::sleep;
   use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -520,6 +520,19 @@ mod tests {
       .any(|event| String::from_utf8_lossy(&event.1).contains(fragment))
   }
 
+  fn payload_seen_all(fragments: &[&str]) -> bool {
+    EVENTS
+      .get_or_init(|| Mutex::new(vec![]))
+      .lock()
+      .expect("events")
+      .iter()
+      .filter(|event| event.0 == event_kind::EMIT)
+      .any(|event| {
+        let payload = String::from_utf8_lossy(&event.1);
+        fragments.iter().all(|fragment| payload.contains(fragment))
+      })
+  }
+
   fn wait_for_payload(fragment: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -530,6 +543,18 @@ mod tests {
     }
     let events = EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clone();
     panic!("timed out waiting for payload {fragment:?}; recorded events: {events:?}");
+  }
+
+  fn wait_for_payload_all(fragments: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+      if payload_seen_all(fragments) {
+        return;
+      }
+      sleep(Duration::from_millis(5));
+    }
+    let events = EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clone();
+    panic!("timed out waiting for payload fragments {fragments:?}; recorded events: {events:?}");
   }
 
   fn wait_for(kind: u32) {
@@ -595,6 +620,10 @@ mod tests {
     for (event, expected_type) in [
       (
         Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(Path::new("modify.cirru").to_path_buf()),
+        "modify",
+      ),
+      (
+        Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any))).add_path(Path::new("modify-any.cirru").to_path_buf()),
         "modify",
       ),
       (
@@ -753,12 +782,13 @@ mod tests {
     let source = path.join("lifecycle.cirru");
     let renamed = path.join("renamed.cirru");
     fs::write(&source, b"first").expect("create lifecycle file");
+    wait_for_payload_all(&[":create", "lifecycle.cirru"]);
     fs::write(&source, b"second").expect("modify lifecycle file");
+    wait_for_payload_all(&[":modify", "lifecycle.cirru"]);
     fs::rename(&source, &renamed).expect("rename lifecycle file");
+    wait_for_payload_all(&[":rename", "renamed.cirru"]);
     fs::remove_file(&renamed).expect("remove lifecycle file");
-    wait_for_payload(":modify");
-    wait_for_payload(":rename");
-    wait_for_payload(":remove");
+    wait_for_payload_all(&[":remove", "renamed.cirru"]);
 
     assert_eq!(unsafe { cancel(context, task.handle, ptr::null(), 0) }, status::OK);
     wait_for(event_kind::COMPLETE);
