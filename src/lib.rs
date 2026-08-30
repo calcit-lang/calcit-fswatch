@@ -1,19 +1,18 @@
 use calcit_native_ffi::{
   BackpressurePolicy, CalcitFfiAsyncHostV1, CalcitFfiAsyncTaskV1, configure_task, copy_async_host, copy_task_descriptor,
-  decode_request, publish_complete as publish_async_complete, publish_emit_until as publish_async_emit_until,
+  decode_request, encode_callback_args, enqueue_with_backpressure_until, event_kind, publish_complete as publish_async_complete,
   publish_failure as publish_async_failure, status, task_flags, task_kind,
 };
 use cirru_edn::{Edn, EdnStructView};
 use notify::event::{DataChange, ModifyKind};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{RecvTimeoutError, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::spawn;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 calcit_native_ffi::export_async_abi_v1!();
 
@@ -25,6 +24,160 @@ struct WatchControl {
 
 static WATCH_CONTROLS: OnceLock<Mutex<HashMap<u64, Arc<WatchControl>>>> = OnceLock::new();
 static NEXT_WATCH_CONTEXT: AtomicU64 = AtomicU64::new(1);
+
+const WATCH_INGRESS_EVENT_CAPACITY: usize = 256;
+const WATCH_INGRESS_BYTE_CAPACITY: usize = 1024 * 1024;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WatchIngressStats {
+  queued_events: usize,
+  queued_bytes: usize,
+  high_water_events: usize,
+  high_water_bytes: usize,
+}
+
+#[derive(Debug)]
+struct WatchIngressState {
+  queue: VecDeque<Vec<u8>>,
+  queued_bytes: usize,
+  #[cfg(test)]
+  high_water_events: usize,
+  #[cfg(test)]
+  high_water_bytes: usize,
+  failure: Option<String>,
+}
+
+#[derive(Debug)]
+struct WatchIngress {
+  event_capacity: usize,
+  byte_capacity: usize,
+  state: Mutex<WatchIngressState>,
+  wake: Condvar,
+}
+
+enum WatchIngressReceive {
+  Payload(Vec<u8>),
+  Failure(String),
+  Timeout,
+}
+
+impl WatchIngress {
+  fn new(event_capacity: usize, byte_capacity: usize) -> Self {
+    assert!(event_capacity > 0, "watch ingress event capacity must be positive");
+    assert!(byte_capacity > 0, "watch ingress byte capacity must be positive");
+    Self {
+      event_capacity,
+      byte_capacity,
+      state: Mutex::new(WatchIngressState {
+        queue: VecDeque::new(),
+        queued_bytes: 0,
+        #[cfg(test)]
+        high_water_events: 0,
+        #[cfg(test)]
+        high_water_bytes: 0,
+        failure: None,
+      }),
+      wake: Condvar::new(),
+    }
+  }
+
+  fn fail_locked(&self, state: &mut WatchIngressState, message: String) {
+    if state.failure.is_none() {
+      state.queue.clear();
+      state.queued_bytes = 0;
+      state.failure = Some(message);
+      self.wake.notify_all();
+    }
+  }
+
+  fn fail(&self, message: impl Into<String>) {
+    let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    self.fail_locked(&mut state, message.into());
+  }
+
+  fn push_batch(&self, payloads: Vec<Vec<u8>>) {
+    if payloads.is_empty() {
+      return;
+    }
+    let incoming_events = payloads.len();
+    let Some(incoming_bytes) = payloads.iter().try_fold(0usize, |total, payload| total.checked_add(payload.len())) else {
+      self.fail("fswatch ingress payload size overflow");
+      return;
+    };
+    let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.failure.is_some() {
+      return;
+    }
+    let next_events = state.queue.len().checked_add(incoming_events);
+    let next_bytes = state.queued_bytes.checked_add(incoming_bytes);
+    if next_events.is_none_or(|count| count > self.event_capacity) || next_bytes.is_none_or(|bytes| bytes > self.byte_capacity) {
+      let message = format!(
+        "fswatch ingress overflow: queued_events={} incoming_events={} event_limit={} queued_bytes={} incoming_bytes={} byte_limit={}",
+        state.queue.len(),
+        incoming_events,
+        self.event_capacity,
+        state.queued_bytes,
+        incoming_bytes,
+        self.byte_capacity
+      );
+      self.fail_locked(&mut state, message);
+      return;
+    }
+    for payload in payloads {
+      state.queued_bytes += payload.len();
+      state.queue.push_back(payload);
+    }
+    #[cfg(test)]
+    {
+      state.high_water_events = state.high_water_events.max(state.queue.len());
+      state.high_water_bytes = state.high_water_bytes.max(state.queued_bytes);
+    }
+    self.wake.notify_one();
+  }
+
+  fn failure(&self) -> Option<String> {
+    self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).failure.clone()
+  }
+
+  fn receive_timeout(&self, timeout: Duration) -> WatchIngressReceive {
+    let deadline = Instant::now() + timeout;
+    let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    loop {
+      if let Some(error) = &state.failure {
+        return WatchIngressReceive::Failure(error.clone());
+      }
+      if let Some(payload) = state.queue.pop_front() {
+        state.queued_bytes = state.queued_bytes.saturating_sub(payload.len());
+        return WatchIngressReceive::Payload(payload);
+      }
+      let now = Instant::now();
+      if now >= deadline {
+        return WatchIngressReceive::Timeout;
+      }
+      let remaining = deadline.saturating_duration_since(now);
+      let (next_state, wait) = self
+        .wake
+        .wait_timeout(state, remaining)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      state = next_state;
+      if wait.timed_out() && state.queue.is_empty() && state.failure.is_none() {
+        return WatchIngressReceive::Timeout;
+      }
+    }
+  }
+
+  #[cfg(test)]
+  fn stats(&self) -> WatchIngressStats {
+    let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    WatchIngressStats {
+      queued_events: state.queue.len(),
+      queued_bytes: state.queued_bytes,
+      high_water_events: state.high_water_events,
+      high_water_bytes: state.high_water_bytes,
+    }
+  }
+}
 
 fn watch_controls() -> &'static Mutex<HashMap<u64, Arc<WatchControl>>> {
   WATCH_CONTROLS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -60,9 +213,9 @@ fn parse_options(args: &[Edn]) -> Result<(Arc<str>, Duration), String> {
   Ok((path, Duration::from_millis(milliseconds as u64)))
 }
 
-fn publish_emit(control: &WatchControl, event: Edn) -> i32 {
-  publish_async_emit_until(control.host, control.task, vec![event], BackpressurePolicy::default(), || {
-    !control.cancelled.load(Ordering::Acquire)
+fn publish_emit_payload(control: &WatchControl, ingress: &WatchIngress, payload: &[u8], policy: BackpressurePolicy) -> i32 {
+  enqueue_with_backpressure_until(control.host, control.task, event_kind::EMIT, 0, payload, policy, || {
+    !control.cancelled.load(Ordering::Acquire) && ingress.failure().is_none()
   })
 }
 
@@ -94,30 +247,73 @@ fn map_event(event: Event) -> Vec<Edn> {
   event.paths.iter().map(|path| new_event(kind, path, &extra)).collect()
 }
 
+fn encode_event_batch(event: Event) -> Result<Vec<Vec<u8>>, String> {
+  map_event(event)
+    .into_iter()
+    .map(|event| encode_callback_args(vec![event]))
+    .collect()
+}
+
+fn run_ingress(
+  ingress: &WatchIngress,
+  cancel_poll: Duration,
+  control: &WatchControl,
+  policy: BackpressurePolicy,
+) -> Result<(), String> {
+  while !control.cancelled.load(Ordering::Acquire) {
+    match ingress.receive_timeout(cancel_poll) {
+      WatchIngressReceive::Payload(payload) => {
+        let publish_status = publish_emit_payload(control, ingress, &payload, policy);
+        if publish_status != status::OK {
+          if control.cancelled.load(Ordering::Acquire) {
+            return Ok(());
+          }
+          if let Some(error) = ingress.failure() {
+            return Err(error);
+          }
+          return Err(format!("fswatch host rejected an ordered event with status {publish_status}"));
+        }
+      }
+      WatchIngressReceive::Failure(error) => {
+        if control.cancelled.load(Ordering::Acquire) {
+          return Ok(());
+        }
+        return Err(error);
+      }
+      WatchIngressReceive::Timeout => {}
+    }
+  }
+  Ok(())
+}
+
 fn run_watcher(path: Arc<str>, poll_interval: Duration, control: Arc<WatchControl>) -> Result<(), String> {
-  let (tx, rx) = channel();
+  let ingress = Arc::new(WatchIngress::new(WATCH_INGRESS_EVENT_CAPACITY, WATCH_INGRESS_BYTE_CAPACITY));
+  let callback_ingress = Arc::clone(&ingress);
   let config = notify::Config::default().with_poll_interval(poll_interval);
-  let mut watcher = RecommendedWatcher::new(tx, config).map_err(|error| format!("failed to create watcher: {error}"))?;
+  let mut watcher = RecommendedWatcher::new(
+    move |result| match result {
+      Ok(event) => match encode_event_batch(event) {
+        Ok(payloads) => callback_ingress.push_batch(payloads),
+        Err(error) => callback_ingress.fail(error),
+      },
+      Err(error) => callback_ingress.fail(format!("filesystem watcher failed: {error}")),
+    },
+    config,
+  )
+  .map_err(|error| format!("failed to create watcher: {error}"))?;
   watcher
     .watch(Path::new(&*path), RecursiveMode::Recursive)
     .map_err(|error| format!("failed to watch path {path}: {error}"))?;
 
   let cancel_poll = poll_interval.min(Duration::from_millis(100));
-  while !control.cancelled.load(Ordering::Acquire) {
-    match rx.recv_timeout(cancel_poll) {
-      Ok(Ok(event)) => {
-        for event in map_event(event) {
-          if publish_emit(&control, event) != status::OK {
-            return Ok(());
-          }
-        }
-      }
-      Ok(Err(error)) => return Err(format!("filesystem watcher failed: {error}")),
-      Err(RecvTimeoutError::Timeout) => {}
-      Err(RecvTimeoutError::Disconnected) => return Err("filesystem watcher channel disconnected".to_owned()),
-    }
+  run_ingress(&ingress, cancel_poll, &control, BackpressurePolicy::default())
+}
+
+fn publish_terminal(control: &WatchControl, outcome: Result<(), String>) -> i32 {
+  match outcome {
+    Ok(()) => publish_complete(control),
+    Err(error) => publish_failure(control, error),
   }
-  Ok(())
 }
 
 unsafe extern "C" fn cancel_watch(task_context: u64, _task_handle: u64, reason_ptr: *const u8, reason_len: usize) -> i32 {
@@ -169,14 +365,7 @@ unsafe fn start_fswatch_async_v1(
     .lock()
     .unwrap_or_else(|poisoned| poisoned.into_inner())
     .insert(context, Arc::clone(&control));
-  let configure_status = configure_task(
-    host,
-    task,
-    task_kind::STREAM,
-    task_flags::SERIAL_EVENTS | task_flags::COALESCE_ALLOWED,
-    context,
-    cancel_watch,
-  );
+  let configure_status = configure_task(host, task, task_kind::STREAM, task_flags::SERIAL_EVENTS, context, cancel_watch);
   if configure_status != status::OK {
     watch_controls()
       .lock()
@@ -186,18 +375,11 @@ unsafe fn start_fswatch_async_v1(
   }
 
   spawn(move || {
-    let outcome = catch_unwind(AssertUnwindSafe(|| run_watcher(path, poll_interval, Arc::clone(&control))));
-    match outcome {
-      Ok(Ok(())) => {
-        let _ = publish_complete(&control);
-      }
-      Ok(Err(error)) => {
-        let _ = publish_failure(&control, error);
-      }
-      Err(_) => {
-        let _ = publish_failure(&control, "fswatch worker panicked");
-      }
-    }
+    let outcome = match catch_unwind(AssertUnwindSafe(|| run_watcher(path, poll_interval, Arc::clone(&control)))) {
+      Ok(outcome) => outcome,
+      Err(_) => Err("fswatch worker panicked".to_owned()),
+    };
+    let _ = publish_terminal(&control, outcome);
     watch_controls()
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -230,7 +412,7 @@ mod tests {
   use super::*;
   use calcit_native_ffi::{ASYNC_PROTOCOL_VERSION, AsyncTaskCancel, encode_edn, event_kind};
   use cirru_edn::EdnListView;
-  use notify::event::CreateKind;
+  use notify::event::{CreateKind, RemoveKind, RenameMode};
   use std::fs;
   use std::thread::sleep;
   use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -240,6 +422,7 @@ mod tests {
   type RecordedEvent = (u32, Vec<u8>);
   static EVENTS: OnceLock<Mutex<Vec<RecordedEvent>>> = OnceLock::new();
   static CONFIG: OnceLock<Mutex<Option<ConfiguredTask>>> = OnceLock::new();
+  static TEST_LOCK: Mutex<()> = Mutex::new(());
   static QUEUE_CALLS: AtomicU64 = AtomicU64::new(0);
 
   unsafe extern "C" fn record_enqueue(
@@ -317,6 +500,38 @@ mod tests {
       .any(|event| event.0 == kind)
   }
 
+  fn event_count(kind: u32) -> usize {
+    EVENTS
+      .get_or_init(|| Mutex::new(vec![]))
+      .lock()
+      .expect("events")
+      .iter()
+      .filter(|event| event.0 == kind)
+      .count()
+  }
+
+  fn payload_seen(fragment: &str) -> bool {
+    EVENTS
+      .get_or_init(|| Mutex::new(vec![]))
+      .lock()
+      .expect("events")
+      .iter()
+      .filter(|event| event.0 == event_kind::EMIT)
+      .any(|event| String::from_utf8_lossy(&event.1).contains(fragment))
+  }
+
+  fn wait_for_payload(fragment: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+      if payload_seen(fragment) {
+        return;
+      }
+      sleep(Duration::from_millis(5));
+    }
+    let events = EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clone();
+    panic!("timed out waiting for payload {fragment:?}; recorded events: {events:?}");
+  }
+
   fn wait_for(kind: u32) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -331,6 +546,7 @@ mod tests {
 
   #[test]
   fn async_layout_and_event_mapping_are_stable() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     assert_eq!(calcit_ffi_async_version(), ASYNC_PROTOCOL_VERSION);
     assert_eq!(std::mem::size_of::<CalcitFfiAsyncTaskV1>(), 24);
     assert_eq!(std::mem::size_of::<CalcitFfiAsyncHostV1>(), 40);
@@ -349,10 +565,61 @@ mod tests {
         .map(|(_, value)| value),
       Some(&Edn::tag("create"))
     );
+
+    let old_path = Path::new("old.cirru").to_path_buf();
+    let new_path = Path::new("new.cirru").to_path_buf();
+    let rename = Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+      .add_path(old_path.clone())
+      .add_path(new_path.clone());
+    let mapped = map_event(rename);
+    assert_eq!(mapped.len(), 2);
+    let paths = mapped
+      .iter()
+      .map(|event| {
+        let Edn::Struct(data) = event else {
+          panic!("event must be a struct");
+        };
+        data
+          .pairs
+          .iter()
+          .find(|(field, _)| field.ref_str() == "path")
+          .map(|(_, value)| value)
+          .expect("event path")
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(
+      paths,
+      vec![&Edn::str(old_path.display().to_string()), &Edn::str(new_path.display().to_string())]
+    );
+
+    for (event, expected_type) in [
+      (
+        Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content))).add_path(Path::new("modify.cirru").to_path_buf()),
+        "modify",
+      ),
+      (
+        Event::new(EventKind::Remove(RemoveKind::File)).add_path(Path::new("remove.cirru").to_path_buf()),
+        "remove",
+      ),
+    ] {
+      let mapped = map_event(event);
+      let Edn::Struct(data) = &mapped[0] else {
+        panic!("event must be a struct");
+      };
+      assert_eq!(
+        data
+          .pairs
+          .iter()
+          .find(|(field, _)| field.ref_str() == "type")
+          .map(|(_, value)| value),
+        Some(&Edn::tag(expected_type))
+      );
+    }
   }
 
   #[test]
   fn emit_backpressure_remains_cancellable() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     QUEUE_CALLS.store(0, Ordering::Relaxed);
     let (task, mut host) = descriptors();
     host.enqueue = Some(always_queue_full);
@@ -361,8 +628,11 @@ mod tests {
       host,
       task,
     });
+    let ingress = Arc::new(WatchIngress::new(1, 1024));
+    let payload = encode_callback_args(vec![Edn::tag("blocked")]).expect("payload");
     let worker_control = Arc::clone(&control);
-    let worker = spawn(move || publish_emit(&worker_control, Edn::tag("blocked")));
+    let worker_ingress = Arc::clone(&ingress);
+    let worker = spawn(move || publish_emit_payload(&worker_control, &worker_ingress, &payload, BackpressurePolicy::default()));
     let deadline = Instant::now() + Duration::from_secs(1);
     while QUEUE_CALLS.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
       sleep(Duration::from_millis(1));
@@ -373,11 +643,85 @@ mod tests {
   }
 
   #[test]
-  fn stream_configures_coalescing_and_completes_after_cancel() {
+  fn ingress_overflow_is_bounded_and_terminal() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clear();
+    let (task, host) = descriptors();
+    let control = WatchControl {
+      cancelled: AtomicBool::new(false),
+      host,
+      task,
+    };
+    let ingress = WatchIngress::new(8, 256);
+    for index in 0..10_000 {
+      ingress.push_batch(vec![format!("event-{index}").into_bytes()]);
+    }
+    let failure = ingress.failure().expect("overflow failure");
+    assert!(failure.contains("fswatch ingress overflow"));
+    let stats = ingress.stats();
+    assert_eq!(stats.queued_events, 0);
+    assert_eq!(stats.queued_bytes, 0);
+    assert!(stats.high_water_events <= 8);
+    assert!(stats.high_water_bytes <= 256);
+    assert!(run_ingress(&ingress, Duration::from_millis(1), &control, BackpressurePolicy::default()).is_err());
+    assert_eq!(publish_terminal(&control, Err(failure)), status::OK);
+    assert_eq!(event_count(event_kind::FAIL), 1);
+    assert_eq!(event_count(event_kind::COMPLETE), 0);
+  }
+
+  #[test]
+  fn ingress_preserves_order_and_rejects_batches_atomically() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let ingress = WatchIngress::new(3, 64);
+    ingress.push_batch(vec![b"first".to_vec(), b"second".to_vec()]);
+    assert!(matches!(
+      ingress.receive_timeout(Duration::ZERO),
+      WatchIngressReceive::Payload(payload) if payload == b"first"
+    ));
+    assert!(matches!(
+      ingress.receive_timeout(Duration::ZERO),
+      WatchIngressReceive::Payload(payload) if payload == b"second"
+    ));
+
+    ingress.push_batch(vec![b"kept".to_vec()]);
+    ingress.push_batch(vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]);
+    assert!(matches!(ingress.receive_timeout(Duration::ZERO), WatchIngressReceive::Failure(_)));
+    let stats = ingress.stats();
+    assert_eq!(stats.queued_events, 0);
+    assert_eq!(stats.queued_bytes, 0);
+  }
+
+  #[test]
+  fn cancellation_completes_once_without_failure() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clear();
+    let (task, host) = descriptors();
+    let control = WatchControl {
+      cancelled: AtomicBool::new(true),
+      host,
+      task,
+    };
+    let ingress = WatchIngress::new(1, 64);
+    let outcome = run_ingress(&ingress, Duration::from_millis(1), &control, BackpressurePolicy::default());
+    assert_eq!(outcome, Ok(()));
+    assert_eq!(publish_terminal(&control, outcome), status::OK);
+    assert_eq!(event_count(event_kind::COMPLETE), 1);
+    assert_eq!(event_count(event_kind::FAIL), 0);
+  }
+
+  #[test]
+  #[cfg_attr(
+    target_os = "macos",
+    ignore = "FSEvents does not reliably report changes from temporary Git worktrees"
+  )]
+  fn stream_preserves_real_event_kinds_and_completes_once_after_cancel() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     EVENTS.get_or_init(|| Mutex::new(vec![])).lock().expect("events").clear();
     *CONFIG.get_or_init(|| Mutex::new(None)).lock().expect("config") = None;
     let suffix = SystemTime::now().duration_since(UNIX_EPOCH).expect("time").as_nanos();
-    let path = std::env::temp_dir().join(format!("calcit-fswatch-{}-{suffix}", std::process::id()));
+    let path = std::env::current_dir()
+      .expect("current directory")
+      .join(format!(".calcit-fswatch-test-{}-{suffix}", std::process::id()));
     fs::create_dir_all(&path).expect("create test directory");
     let options = Edn::map_from_iter([
       (Edn::tag("path"), Edn::str(path.display().to_string())),
@@ -391,7 +735,7 @@ mod tests {
     );
     let (kind, flags, context, cancel) = CONFIG.get().expect("config").lock().expect("config lock").expect("configured");
     assert_eq!(kind, task_kind::STREAM);
-    assert_eq!(flags, task_flags::SERIAL_EVENTS | task_flags::COALESCE_ALLOWED);
+    assert_eq!(flags, task_flags::SERIAL_EVENTS);
     // The async start contract reports watcher initialization failures through
     // a terminal event, so configuration may precede OS watcher readiness.
     // Keep producing distinct create events until the stream proves ready
@@ -404,13 +748,29 @@ mod tests {
       sleep(Duration::from_millis(25));
     }
     wait_for(event_kind::EMIT);
+    wait_for_payload(":create");
+
+    let source = path.join("lifecycle.cirru");
+    let renamed = path.join("renamed.cirru");
+    fs::write(&source, b"first").expect("create lifecycle file");
+    fs::write(&source, b"second").expect("modify lifecycle file");
+    fs::rename(&source, &renamed).expect("rename lifecycle file");
+    fs::remove_file(&renamed).expect("remove lifecycle file");
+    wait_for_payload(":modify");
+    wait_for_payload(":rename");
+    wait_for_payload(":remove");
+
     assert_eq!(unsafe { cancel(context, task.handle, ptr::null(), 0) }, status::OK);
     wait_for(event_kind::COMPLETE);
+    sleep(Duration::from_millis(50));
+    assert_eq!(event_count(event_kind::COMPLETE), 1);
+    assert_eq!(event_count(event_kind::FAIL), 0);
     fs::remove_dir_all(path).expect("remove test directory");
   }
 
   #[test]
   fn start_rejects_invalid_payloads() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let (task, host) = descriptors();
     assert_eq!(
       unsafe { fswatch_calcit_ffi_async_v1(ptr::null(), 1, &task, &host) },
