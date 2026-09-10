@@ -43,9 +43,11 @@ jobs:
         run: |
           calcit calcit.cirru edit format
           git diff --exit-code -- calcit.cirru
-          calcit calcit.cirru --check-only
+          calcit calcit.cirru --strict-types --check-only
           calcit calcit.cirru analyze quality
           calcit calcit.cirru analyze dynamic-methods --max 0
+          calcit calcit.cirru docs format-md README.md --check
+          calcit calcit.cirru docs check-md README.md --failures-only
 
       - name: Run watcher smoke test
         shell: bash
