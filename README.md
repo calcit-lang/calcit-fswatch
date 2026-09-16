@@ -9,8 +9,7 @@ API 设计: https://github.com/calcit-lang/calcit_runner.rs/discussions/116 .
 APIs:
 
 ```cirru
-fswatch.core/fswatch!
-  fswatch.core/FswatchOptions :path |folder/ :duration 200
+fswatch.core/fswatch! (fswatch.core/FswatchOptions :path |folder/ :duration 200)
   fn (event) (println event.:type event.:path)
 ```
 
