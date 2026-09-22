@@ -19,3 +19,5 @@ compact.cirru
 sandbox/
 
 .DS_Store
+
+/js-out/
