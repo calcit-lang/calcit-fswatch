@@ -78,6 +78,19 @@ fswatch.core/FswatchEvent :type :modify :path |folder/demo.cirru :extra |Data-co
 
 https://github.com/calcit-lang/dylib-workflow
 
+本仓库使用正式 Calcit 0.28.0，默认入口显式声明 native target，空 reload
+返回 `&unit`。FswatchOptions/FswatchEvent/FfiTask 合同、watcher 的事件顺序、
+取消和 backpressure 行为，以及 Rust 依赖与协议版本保持不变。
+没有前端资源，不添加 COS 或额外验证脚本。
+
+CI 保留仓库要求的 quality/dynamic-method 门禁、Rust 测试、异步 FFI 符号
+审计、文档执行和五秒有界 watcher smoke，并补全部项目命名空间公开定义
+检查及工具链匹配。smoke 只证明异步导出实际加载；真实文件事件和取消完成
+由已有 Rust 测试验收。该事件测试在 macOS 按原策略跳过，以 Linux CI 为准。
+
+Action 使用正式标签，标签可移动；只读权限和禁用 checkout 凭据持久化
+不保证供应链不可变。不新增迁移规则、类型强转或测试框架。
+
 ### License
 
 MIT

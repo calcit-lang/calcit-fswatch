@@ -11,10 +11,15 @@ jobs:
   build_and_test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: calcit-lang/setup-calcit@ca701be5a471759e442aa053cd100720bbe1f09f # v1.5.0
+      - uses: calcit-lang/setup-calcit@v1.5.0
         with:
           tools: calcit,caps
 
@@ -23,17 +28,19 @@ jobs:
           toolchain: stable
           components: clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@v2
 
-      - run: caps --strict --ci
+      - run: |
+          caps --strict --ci
+          caps verify --toolchain
 
       - run: cargo fmt -- --check
 
-      - run: cargo test
+      - run: cargo test --locked
 
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
-      - run: cargo build --release
+      - run: cargo build --release --locked
 
       - run: mkdir -p dylibs/ && cp -v target/release/libcalcit_fswatch.* dylibs/
 
@@ -44,6 +51,7 @@ jobs:
           calcit calcit.cirru edit format
           git diff --exit-code -- calcit.cirru
           calcit calcit.cirru --strict-types --check-only
+          calcit calcit.cirru analyze check-public --ns 'fswatch.$meta' --ns fswatch.core --ns fswatch.test --ns fswatch.util --format json
           calcit calcit.cirru analyze quality
           calcit calcit.cirru analyze dynamic-methods
           calcit calcit.cirru docs format-md README.md --check
