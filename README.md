@@ -10,19 +10,23 @@ APIs:
 
 ```cirru
 fswatch.core/fswatch! (fswatch.core/FswatchOptions :path |folder/ :duration 200)
-  fn (event) (println event.:type event.:path)
+  fn (event)
+    hint-fn $ {}
+      :args $ [] 'fswatch.core/FswatchEvent
+      :return 'Unit
+    println (:type event) (:path event)
 ```
 
 `fswatch!` returns a typed `FfiTask`. Keep the task when its lifetime must be
-controlled explicitly, then call `.cancel` or `.cancel-with` during component
+controlled explicitly, then call `.cancel!` or `.cancel-with!` during component
 or server shutdown.
 
 `fswatch!` 返回类型化的 `FfiTask`。需要显式控制监听生命周期时应保留该任务，
-并在组件或服务停止时调用 `.cancel` 或 `.cancel-with`。
+并在组件或服务停止时调用 `.cancel!` 或 `.cancel-with!`。
 
 Install through `caps`, then compile and provide the platform dynamic library with `./build.sh`.
 The native library uses Calcit's C-safe cancellable async Stream protocol v1 and
-requires Calcit 0.15.3 or newer. Shared descriptors, validation, Cirru EDN
+uses the project's pinned Calcit 0.29.0. Shared descriptors, validation, Cirru EDN
 transport, host calls, and backpressure policy come from
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi).
 The module tracks `calcit_native_ffi 0.1.3`; async, resource, and buffer
@@ -31,7 +35,7 @@ The watcher registry, thread, and cancellation state remain module-owned, while
 the shared crate owns deadline-aware retry and polls the module predicate at
 most every 10ms. Legacy Rust callback ABI symbols are no longer exported.
 
-原生库要求 Calcit 0.15.3 或更新版本。Descriptor、validation、Cirru EDN
+项目使用正式 Calcit 0.29.0。Descriptor、validation、Cirru EDN
 transport、host call 与 backpressure policy 由
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi) 维护；
 模块当前使用 `calcit_native_ffi 0.1.3`，async、resource 与 buffer protocol
@@ -78,14 +82,17 @@ fswatch.core/FswatchEvent :type :modify :path |folder/demo.cirru :extra |Data-co
 
 https://github.com/calcit-lang/dylib-workflow
 
-本仓库使用正式 Calcit 0.28.0，默认入口显式声明 native target，空 reload
-返回 `&unit`。FswatchOptions/FswatchEvent/FfiTask 合同、watcher 的事件顺序、
-取消和 backpressure 行为，以及 Rust 依赖与协议版本保持不变。
+本仓库使用正式 Calcit 0.29.0，默认入口显式声明 native target，空 reload
+返回 `&unit`。原生任务句柄通过 `ffi:task` 包装为真正的 FfiTask；原生事件在
+适配边界经 `decode-map-as` 恢复并校验 FswatchEvent 的类型与字段。
+公开合同、watcher 的事件顺序、取消和 backpressure 行为，以及 Rust 依赖与
+协议版本保持不变。
 没有前端资源，不添加 COS 或额外验证脚本。
 
-CI 保留仓库要求的 quality/dynamic-method 门禁、Rust 测试、异步 FFI 符号
-审计、文档执行和五秒有界 watcher smoke，并补全部项目命名空间公开定义
-检查及工具链匹配。smoke 只证明异步导出实际加载；真实文件事件和取消完成
+CI 使用严格入口和全部项目命名空间检查、weak-types dynamic-method 视图、
+Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smoke，并检查
+工具链匹配。不再使用已弃用的 quality/check-public/dynamic-methods 入口。
+smoke 只证明异步导出实际加载；真实文件事件和取消完成
 由已有 Rust 测试验收。该事件测试在 macOS 按原策略跳过，以 Linux CI 为准。
 
 Action 使用正式标签，标签可移动；只读权限和禁用 checkout 凭据持久化
