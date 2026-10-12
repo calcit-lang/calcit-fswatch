@@ -21,7 +21,8 @@
         'fswatch! $ %{} 'CodeEntry
           :doc "|Starts an ordered, cancellable filesystem event stream and returns FfiTask. Native ingress is bounded; overflow fails the task explicitly, so consumers must rescan watched state before restarting. / 启动有序且可取消的文件事件流并返回 FfiTask。原生入口队列有界；溢出会显式失败，消费者重启前必须重新扫描被监听状态。"
           :code $ quote $ defn fswatch! (options cb)
-            &call-dylib-edn-fn (get-dylib-path |/dylibs/libcalcit_fswatch) |fswatch options cb
+            ffi:task $ &call-dylib-edn-fn (get-dylib-path |/dylibs/libcalcit_fswatch) |fswatch options $ fn (raw-event)
+              cb $ decode-map-as (&struct:to-map raw-event) FswatchEvent
           :examples $ []
           :schema $ :: 'Fn $ {} (:return 'FfiTask)
             :args $ [] 'fswatch.core/FswatchOptions $ :: 'Fn
@@ -61,7 +62,7 @@
       :defs $ {}
         'get-dylib-ext $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defmacro get-dylib-ext ()
-            case-default (&get-os) |.so (:macos |.dylib) (:windows |.dll)
+            match (&get-os) (:macos |.dylib) (:windows |.dll) (_ |.so)
           :examples $ []
           :schema $ :: 'Macro $ {}
             :capabilities $ #{} :platform-read
