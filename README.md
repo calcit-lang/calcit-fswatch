@@ -27,7 +27,7 @@ or server shutdown.
 
 Install through `caps`, then compile and provide the platform dynamic library with `./build.sh`.
 The native library uses Calcit's C-safe cancellable async Stream protocol v1 and
-uses the project's pinned Calcit 0.29.3. Shared descriptors, validation, Cirru EDN
+uses the project's pinned Calcit 0.30.0. Shared descriptors, validation, Cirru EDN
 transport, host calls, and backpressure policy come from
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi).
 The module tracks `calcit_native_ffi 0.1.3`; async, resource, and buffer
@@ -36,7 +36,7 @@ The watcher registry, thread, and cancellation state remain module-owned, while
 the shared crate owns deadline-aware retry and polls the module predicate at
 most every 10ms. Legacy Rust callback ABI symbols are no longer exported.
 
-项目使用正式 Calcit 0.29.3。Descriptor、validation、Cirru EDN
+项目使用正式 Calcit 0.30.0。Descriptor、validation、Cirru EDN
 transport、host call 与 backpressure policy 由
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi) 维护；
 模块当前使用 `calcit_native_ffi 0.1.3`，async、resource 与 buffer protocol
@@ -83,12 +83,17 @@ fswatch.core/FswatchEvent :type :modify :path |folder/demo.cirru :extra |Data-co
 
 https://github.com/calcit-lang/dylib-workflow
 
-本仓库使用正式 Calcit 0.29.3，默认入口显式声明 native target，空 reload
+本仓库使用正式 Calcit 0.30.0，默认入口显式声明 native target，空 reload
 返回 `&unit`。原生任务句柄通过 `ffi:task` 包装为真正的 FfiTask；原生事件在
 适配边界经 `decode-map-as` 恢复并校验 FswatchEvent 的类型与字段。
 公开合同、watcher 的事件顺序、取消和 backpressure 行为，以及 Rust 依赖与
 协议版本保持不变。
 没有前端资源，不添加 COS 或额外验证脚本。
+
+本轮工具链更新不修改 Snapshot、Rust 源码、Cargo 依赖或 ABI/protocol；模块版本
+仍为 0.0.16。CI 从 deps.cirru 读取工具链，并在既有检查步骤验证完整 strict workflow。
+不引入 alpha/hash、类型强转、质量预算或新的 checker。macOS 的真实事件测试仍按
+原策略跳过，不能以本地 smoke 通过代替 Linux 的实际事件及取消验收。
 
 CI 使用严格入口和全部项目命名空间检查、weak-types dynamic-method 视图、
 Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smoke，并检查
