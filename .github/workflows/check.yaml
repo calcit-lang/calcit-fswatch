@@ -53,6 +53,7 @@ jobs:
           calcit calcit.cirru edit format
           git diff --exit-code -- calcit.cirru
           calcit calcit.cirru --strict-types --check-only
+          calcit calcit.cirru --check-only --all-defs
           calcit calcit.cirru fix --workflow strict --verify --format json
           calcit calcit.cirru --check-only --ns 'fswatch.$meta' --ns fswatch.core --ns fswatch.test --ns fswatch.util --summary-only --format json
           calcit calcit.cirru analyze weak-types --only dynamic-method
