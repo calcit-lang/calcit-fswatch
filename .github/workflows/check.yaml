@@ -42,9 +42,7 @@ jobs:
 
       - run: cargo clippy --all-targets --locked -- -D warnings
 
-      - run: cargo build --release --locked
-
-      - run: mkdir -p dylibs/ && cp -v target/release/libcalcit_fswatch.* dylibs/
+      - run: bash build.sh
 
       - run: bash scripts/check-c-safe-ffi.sh
 
