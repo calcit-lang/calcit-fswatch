@@ -111,8 +111,10 @@ CI 从 deps.cirru 读取工具链，在原有步骤明确断言完整 strict wor
 CI 使用严格入口和全部项目命名空间检查、weak-types dynamic-method 视图、
 Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smoke，并检查
 工具链匹配。不再使用已弃用的 quality/check-public/dynamic-methods 入口。
-smoke 只证明异步导出实际加载；真实文件事件和取消完成
-由已有 Rust 测试验收。该事件测试在 macOS 按原策略跳过，以 Linux CI 为准。
+原五秒 smoke 现在写入 sandbox 合成文件，除异步导出加载外，还要求 Calcit 回调输出
+实际的 FswatchEvent 与该文件路径；短时重复写入避免依赖 watcher 恰好先启动的时序。
+它仍以 timeout 结束，不代表正常取消完成；取消完成由已有 Rust 测试验收。
+该真实事件测试在 macOS 按原策略跳过，以 Linux CI 为准。
 
 Action 使用正式标签，标签可移动；只读权限和禁用 checkout 凭据持久化
 不保证供应链不可变。不新增迁移规则、类型强转或测试框架。
