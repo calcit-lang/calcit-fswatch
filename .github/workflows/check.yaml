@@ -42,9 +42,7 @@ jobs:
 
       - run: cargo clippy --all-targets --locked -- -D warnings
 
-      - run: cargo build --release --locked
-
-      - run: mkdir -p dylibs/ && cp -v target/release/libcalcit_fswatch.* dylibs/
+      - run: bash build.sh
 
       - run: bash scripts/check-c-safe-ffi.sh
 
@@ -65,9 +63,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p sandbox
+          (
+            for wave in 1 2 3 4; do
+              sleep 1
+              printf '%s\n' "$wave" > sandbox/ffi-event-smoke.txt
+            done
+          ) &
+          writer_pid=$!
           set +e
           timeout 5s calcit --trace-ffi calcit.cirru 2>&1 | tee /tmp/fswatch-smoke.log
           status=${PIPESTATUS[0]}
           set -e
+          wait "$writer_pid"
           test "$status" -eq 124
           grep -F 'fswatch_calcit_ffi_async_v1' /tmp/fswatch-smoke.log
+          grep -F 'FswatchEvent' /tmp/fswatch-smoke.log | grep -F 'ffi-event-smoke.txt'
