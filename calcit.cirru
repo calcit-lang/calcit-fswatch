@@ -13,11 +13,11 @@
         'FswatchEvent $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defstruct FswatchEvent (:type 'Tag) (:path 'String) (:extra 'String)
           :examples $ []
-          :schema $ :: 'StructDef
+          :schema $ quote StructDef
         'FswatchOptions $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defstruct FswatchOptions (:path 'String) (:duration 'Number)
           :examples $ []
-          :schema $ :: 'StructDef
+          :schema $ quote StructDef
         'fswatch! $ %{} 'CodeEntry
           :doc "|Starts an ordered, cancellable filesystem event stream and returns FfiTask. Native ingress is bounded; overflow fails the task explicitly, so consumers must rescan watched state before restarting. / 启动有序且可取消的文件事件流并返回 FfiTask。原生入口队列有界；溢出会显式失败，消费者重启前必须重新扫描被监听状态。"
           :code $ quote $ defn fswatch! (options cb)
@@ -26,10 +26,9 @@
                 cb $ decode-map-as (&struct:to-map raw-event) FswatchEvent
                 raise "|fswatch callback expected a Struct event"
           :examples $ []
-          :schema $ :: 'Fn $ {} (:return 'FfiTask)
-            :args $ [] 'fswatch.core/FswatchOptions $ :: 'Fn
-              {} (:return 'Unit)
-                :args $ [] 'fswatch.core/FswatchEvent
+          :schema $ quote $ Fn fswatch.core/FswatchOptions
+            Fn fswatch.core/FswatchEvent $ -> Unit
+            -> FfiTask
       :ns $ %{} 'NsEntry (:doc |)
         :code $ quote $ ns fswatch.core
           :require
@@ -43,18 +42,15 @@
             fswatch! (FswatchOptions :path |sandbox :duration 1000)
               fn (event) (println event) &unit
           :examples $ []
-          :schema $ :: 'Fn $ {} (:return 'FfiTask)
-            :args $ []
+          :schema $ quote $ Fn (-> FfiTask)
         'reload! $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defn reload! () &unit
           :examples $ []
-          :schema $ :: 'Fn $ {} (:return 'Unit)
-            :args $ []
+          :schema $ quote $ Fn (-> Unit)
         'run-tests $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defn run-tests () (println "|%%%% test for lib") (println calcit-filename calcit-dirname) &unit
           :examples $ []
-          :schema $ :: 'Fn $ {} (:return 'Unit)
-            :args $ []
+          :schema $ quote $ Fn (-> Unit)
       :ns $ %{} 'NsEntry (:doc |)
         :code $ quote $ ns fswatch.test
           :require
@@ -66,22 +62,19 @@
           :code $ quote $ defmacro get-dylib-ext ()
             match (&get-os) (:macos |.dylib) (:windows |.dll) (_ |.so)
           :examples $ []
-          :schema $ :: 'Macro $ {}
-            :capabilities $ #{} :platform-read
-            :expansion $ :: 'Expr 'String
-            :required $ []
+          :schema $ quote $ Macro
+            -> $ Expr String
+            :capabilities :platform-read
         'get-dylib-path $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defn get-dylib-path (p)
             str (or-current-path calcit-dirname) p $ get-dylib-ext
           :examples $ []
-          :schema $ :: 'Fn $ {} (:return 'String)
-            :args $ [] 'String
+          :schema $ quote $ Fn String (-> String)
         'or-current-path $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defn or-current-path (p)
             if (blank? p) |. p
           :examples $ []
-          :schema $ :: 'Fn $ {} (:return 'String)
-            :args $ [] 'String
+          :schema $ quote $ Fn String (-> String)
       :ns $ %{} 'NsEntry (:doc |)
         :code $ quote $ ns fswatch.util
           :require $ fswatch.$meta :refer $ calcit-dirname calcit-filename
