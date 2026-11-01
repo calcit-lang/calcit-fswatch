@@ -11,11 +11,11 @@
     'fswatch.core $ %{} 'FileEntry
       :defs $ {}
         'FswatchEvent $ %{} 'CodeEntry (:doc |)
-          :code $ quote $ defstruct FswatchEvent (:type 'Tag) (:path 'String) (:extra 'String)
+          :code $ quote $ defstruct FswatchEvent (:type Tag) (:path String) (:extra String)
           :examples $ []
           :schema $ quote StructDef
         'FswatchOptions $ %{} 'CodeEntry (:doc |)
-          :code $ quote $ defstruct FswatchOptions (:path 'String) (:duration 'Number)
+          :code $ quote $ defstruct FswatchOptions (:path String) (:duration Number)
           :examples $ []
           :schema $ quote StructDef
         'fswatch! $ %{} 'CodeEntry
