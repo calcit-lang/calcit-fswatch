@@ -98,7 +98,7 @@ https://github.com/calcit-lang/dylib-workflow
 
 CI 从 deps.cirru 读取工具链，在原有步骤明确断言完整 strict workflow passed/空 diagnostics，
 并启用 pipefail。不再使用冗余且已弃用的 `--strict-types`，默认严格入口和全部定义检查保留。
-正式 0.34.0 配对保留 11 个定义/完整 strict、Rust fmt/clippy/build 与 ABI 审计。
+正式 0.34.0 配对保留全部 9 个源码定义（检查报告含 2 个命名空间元定义，共 11 项）、完整 strict、Rust fmt/clippy/build 与 ABI 审计。
 真实事件单测仍按既有 macOS 策略跳过。本地五秒有界 smoke 只观察到异步 ABI 加载，
 尚未收到文件事件；同主机官方 0.32.1 对照也未收到，不能据此归因于新版或宣称事件验收通过。
 完整事件与正常取消验收仍以本次精确提交的 Linux CI 为准，原 Linux 事件门禁保留。
