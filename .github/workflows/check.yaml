@@ -25,12 +25,11 @@ jobs:
           deps-file: deps.cirru
           caps-version: 0.1.1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v2.0.0
         with:
           toolchain: stable
-          components: clippy
-
-      - uses: Swatinem/rust-cache@v2
+          components: clippy,rustfmt
+          cache: false
 
       - run: |
           caps --strict --ci

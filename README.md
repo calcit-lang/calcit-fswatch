@@ -2,11 +2,11 @@
 
 > internally it calls [Rust notify](https://github.com/notify-rs/notify) to watch the folder.
 
-### 正式 0.32.1 配对：使用者影响
+### 正式 0.34.0 配对：使用者影响
 
-候选模块 **0.0.20** 要求正式 **Calcit 0.32.1**，旧 CLI 消费者保留原 tag。下游同步精确工具链声明，保留 Caps strict，并用原 build.sh 锁定依赖重建动态库。仅支持 native，没有 npm runtime、JS/WASM 配对或部署。
+候选模块 **0.0.20** 要求正式 **Calcit 0.34.0**，旧 CLI 消费者保留原 tag。下游同步精确工具链声明，保留 Caps strict，并用原 build.sh 锁定依赖重建动态库。仅支持 native，没有 npm runtime、JS/WASM 配对或部署。
 
-已发布 **0.0.19** 配对 Calcit 0.32.0，当前 main 已完成新类型语法迁移；本次只对齐候选版本、工具链声明与说明，Snapshot 逐字节不变。Rust/Cargo/lock、FswatchOptions/FswatchEvent、事件顺序、取消和 async ABI v1 不变，Cargo crate 保持 0.0.16。继续保留 FfiTask 并在退出时取消；队列溢出后仍需重新扫描再启动。不新增脚本、类型预算或编译器改写规则。
+已发布 **0.0.19** 配对 Calcit 0.32.0，当前 main 已完成新类型语法迁移；本次对齐工具链声明，官方 formatter 将 Struct 字段类型名规范为 0.34.0 的裸类型写法。Rust/Cargo/lock、FswatchOptions/FswatchEvent、事件顺序、取消和 async ABI v1 不变，Cargo crate 保持 0.0.16。继续保留 FfiTask 并在退出时取消；队列溢出后仍需重新扫描再启动。不新增脚本、类型预算或编译器改写规则。
 
 CLI 兼容性注意：沿用 0.32.0 起 native `identical?` 的容器身份比较语义；比较内容用 `=`。本模块无该调用，不机械改写 watcher 行为。候选 0.0.20 尚未发布，不移动历史 0.0.19 tag。
 
@@ -33,7 +33,7 @@ or server shutdown.
 
 Install through `caps`, then compile and provide the platform dynamic library with `./build.sh`.
 The native library uses Calcit's C-safe cancellable async Stream protocol v1 and
-uses the project's pinned formal Calcit 0.32.1. Shared descriptors, validation, Cirru EDN
+uses the project's pinned formal Calcit 0.34.0. Shared descriptors, validation, Cirru EDN
 transport, host calls, and backpressure policy come from
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi).
 The module tracks `calcit_native_ffi 0.1.3`; async, resource, and buffer
@@ -42,7 +42,7 @@ The watcher registry, thread, and cancellation state remain module-owned, while
 the shared crate owns deadline-aware retry and polls the module predicate at
 most every 10ms. Legacy Rust callback ABI symbols are no longer exported.
 
-项目使用正式 Calcit 0.32.1。Descriptor、validation、Cirru EDN
+项目使用正式 Calcit 0.34.0。Descriptor、validation、Cirru EDN
 transport、host call 与 backpressure policy 由
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi) 维护；
 模块当前使用 `calcit_native_ffi 0.1.3`，async、resource 与 buffer protocol
@@ -89,7 +89,7 @@ fswatch.core/FswatchEvent :type :modify :path |folder/demo.cirru :extra |Data-co
 
 https://github.com/calcit-lang/dylib-workflow
 
-本仓库使用正式 Calcit 0.32.1，默认入口显式声明 native target，空 reload
+本仓库使用正式 Calcit 0.34.0，默认入口显式声明 native target，空 reload
 返回 `&unit`。原生任务句柄通过 `ffi:task` 包装为真正的 FfiTask；原生事件在
 适配边界经 `decode-map-as` 恢复并校验 FswatchEvent 的类型与字段。
 公开合同、watcher 的事件顺序、取消和 backpressure 行为，以及 Rust 依赖与
@@ -98,9 +98,10 @@ https://github.com/calcit-lang/dylib-workflow
 
 CI 从 deps.cirru 读取工具链，在原有步骤明确断言完整 strict workflow passed/空 diagnostics，
 并启用 pipefail。不再使用冗余且已弃用的 `--strict-types`，默认严格入口和全部定义检查保留。
-正式 0.32.1 配对保留 11 个定义/完整 strict、Rust fmt/clippy/build 与 ABI 审计。
-真实事件单测仍按既有 macOS 策略跳过；本轮五秒有界 smoke 已收到合成文件的修改事件，
-但不能代替正常取消后的完成事件证明。完整事件与取消验收仍以本次精确提交的 Linux CI 为准。
+正式 0.34.0 配对保留全部 9 个源码定义（检查报告含 2 个命名空间元定义，共 11 项）、完整 strict、Rust fmt/clippy/build 与 ABI 审计。
+真实事件单测仍按既有 macOS 策略跳过。本地五秒有界 smoke 只观察到异步 ABI 加载，
+尚未收到文件事件；同主机官方 0.32.1 对照也未收到，不能据此归因于新版或宣称事件验收通过。
+完整事件与正常取消验收仍以本次精确提交的 Linux CI 为准，原 Linux 事件门禁保留。
 
 CI 使用严格入口和全部项目命名空间检查、weak-types dynamic-method 视图、
 Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smoke，并检查
@@ -109,6 +110,8 @@ Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smok
 实际的 FswatchEvent 与该文件路径；短时重复写入避免依赖 watcher 恰好先启动的时序。
 它仍以 timeout 结束，不代表正常取消完成；取消完成由已有 Rust 测试验收。
 该真实事件测试在 macOS 按原策略跳过，以 Linux CI 为准。
+
+Rust setup 复用 `actions-rust-lang/setup-rust-toolchain@v2.0.0`，替代浮动 stable setup 与主版本 cache step，保留原 locked 构建、测试和严格 Clippy。
 
 Action 使用正式标签，标签可移动；只读权限和禁用 checkout 凭据持久化
 不保证供应链不可变。不新增迁移规则、类型强转或测试框架。
