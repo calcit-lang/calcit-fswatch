@@ -4,7 +4,7 @@
 
 ### 使用者影响
 
-候选模块 **0.0.22** 使用正式 Calcit **0.38.0**。请同步工具链，并用 `build.sh` 按锁定依赖重建本机动态库。
+候选模块 **0.0.23** 使用正式 Calcit **0.40.0**。请同步工具链，并用 `build.sh` 按锁定依赖重建本机动态库。
 
 `FswatchOptions`、`FswatchEvent` 和 `FfiTask` 继续使用原合同。保留任务句柄以便主动取消，遇到队列溢出后重新扫描再启动。事件的开放 `Tag` 仍由原生 watcher 提供。
 
@@ -31,7 +31,7 @@ or server shutdown.
 
 Install through `caps`, then compile and provide the platform dynamic library with `./build.sh`.
 The native library uses Calcit's C-safe cancellable async Stream protocol v1 and
-uses the project's pinned formal Calcit 0.38.0. Shared descriptors, validation, Cirru EDN
+uses the project's pinned formal Calcit 0.40.0. Shared descriptors, validation, Cirru EDN
 transport, host calls, and backpressure policy come from
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi).
 The module tracks `calcit_native_ffi 0.1.3`; async, resource, and buffer
@@ -40,7 +40,7 @@ The watcher registry, thread, and cancellation state remain module-owned, while
 the shared crate owns deadline-aware retry and polls the module predicate at
 most every 10ms. Legacy Rust callback ABI symbols are no longer exported.
 
-项目使用正式 Calcit 0.38.0。Descriptor、validation、Cirru EDN
+项目使用正式 Calcit 0.40.0。Descriptor、validation、Cirru EDN
 transport、host call 与 backpressure policy 由
 [`calcit_native_ffi`](https://github.com/calcit-lang/calcit-native-ffi) 维护；
 模块当前使用 `calcit_native_ffi 0.1.3`，async、resource 与 buffer protocol
@@ -87,7 +87,7 @@ fswatch.core/FswatchEvent :type :modify :path |folder/demo.cirru :extra |Data-co
 
 https://github.com/calcit-lang/dylib-workflow
 
-本仓库使用正式 Calcit 0.38.0，默认入口显式声明 native target，空 reload
+本仓库使用正式 Calcit 0.40.0，默认入口显式声明 native target，空 reload
 返回 `&unit`。原生任务句柄通过 `ffi:task` 包装为真正的 FfiTask；原生事件在
 适配边界经 `decode-map-as` 恢复并校验 FswatchEvent 的类型与字段。
 公开合同、watcher 的事件顺序、取消和 backpressure 行为，以及 Rust 依赖与
@@ -96,8 +96,8 @@ https://github.com/calcit-lang/dylib-workflow
 
 CI 从 deps.cirru 读取工具链，在原有步骤明确断言完整 strict workflow passed/空 diagnostics，
 并启用 pipefail。不再使用冗余且已弃用的 `--strict-types`，默认严格入口和全部定义检查保留。
-0.38.0 在 macOS arm64 已收到真实合成文件的 `FswatchEvent`。本地 smoke 以超时结束，
-Linux 事件和取消相关检查仍沿用原工作流及 Rust 测试。
+0.40.0 在 macOS arm64 的隔离临时目录收到了合成文件的创建和修改事件。本地 smoke
+在限定时间后退出，Linux 事件和取消相关检查由原工作流及 Rust 测试覆盖。
 
 CI 使用严格入口和全部项目命名空间检查、weak-types dynamic-method 视图、
 Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smoke，并检查
@@ -105,7 +105,7 @@ Rust 测试、异步 FFI 符号审计、文档执行和五秒有界 watcher smok
 原五秒 smoke 现在写入 sandbox 合成文件，除异步导出加载外，还要求 Calcit 回调输出
 实际的 FswatchEvent 与该文件路径；短时重复写入避免依赖 watcher 恰好先启动的时序。
 它仍以 timeout 结束，不代表正常取消完成；取消完成由已有 Rust 测试验收。
-该真实事件测试在 macOS 按原策略跳过，以 Linux CI 为准。
+Rust 的 Git worktree 文件事件测试按原策略在 macOS 跳过，Linux CI 会执行。
 
 Rust setup 复用 `actions-rust-lang/setup-rust-toolchain@v2.0.0`，替代浮动 stable setup 与主版本 cache step，保留原 locked 构建、测试和严格 Clippy。
 
