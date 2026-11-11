@@ -26,8 +26,8 @@
                 cb $ decode-map-as (&struct:to-map raw-event) FswatchEvent
                 raise "|fswatch callback expected a Struct event"
           :examples $ []
-          :schema $ quote $ Fn fswatch.core/FswatchOptions
-            Fn fswatch.core/FswatchEvent $ -> Unit
+          :schema $ quote $ Fn FswatchOptions
+            Fn FswatchEvent $ -> Unit
             -> FfiTask
       :ns $ %{} 'NsEntry (:doc |)
         :code $ quote $ ns fswatch.core
