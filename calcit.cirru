@@ -42,7 +42,7 @@
             fswatch! (FswatchOptions :path |sandbox :duration 1000)
               fn (event) (println event) &unit
           :examples $ []
-          :schema $ quote $ Fn (-> FfiTask)
+          :schema $ quote $ Fn (-> FfiTask) (:features :io)
         'reload! $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defn reload! () &unit
           :examples $ []
@@ -50,7 +50,7 @@
         'run-tests $ %{} 'CodeEntry (:doc |)
           :code $ quote $ defn run-tests () (println "|%%%% test for lib") (println calcit-filename calcit-dirname) &unit
           :examples $ []
-          :schema $ quote $ Fn (-> Unit)
+          :schema $ quote $ Fn (-> Unit) (:features :io)
       :ns $ %{} 'NsEntry (:doc |)
         :code $ quote $ ns fswatch.test
           :require
